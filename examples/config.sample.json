@@ -1,0 +1,90 @@
+{
+  "connections": {
+    "sqlserver": {
+      "displayName": "Local SQL Server",
+      "engine": "SqlServer",
+      "providerInvariantName": "Microsoft.Data.SqlClient",
+      "factoryAssembly": "Microsoft.Data.SqlClient",
+      "factoryTypeName": "Microsoft.Data.SqlClient.SqlClientFactory",
+      "endpoint": {
+        "host": "localhost",
+        "port": 1433,
+        "database": "ExampleDb",
+        "username": "readonly_user",
+        "password": "change-me",
+        "trustServerCertificate": true
+      },
+      "commandTimeoutSeconds": 60,
+      "readOnlyMode": true,
+      "openingIdentifierQuote": "[",
+      "closingIdentifierQuote": "]"
+    },
+    "postgres": {
+      "displayName": "Remote PostgreSQL through SSH",
+      "engine": "PostgreSql",
+      "providerInvariantName": "Npgsql",
+      "factoryAssembly": "Npgsql",
+      "factoryTypeName": "Npgsql.NpgsqlFactory",
+      "endpoint": {
+        "host": "127.0.0.1",
+        "port": 5432,
+        "database": "example",
+        "username": "readonly_user",
+        "password": "change-me"
+      },
+      "sshTunnel": {
+        "enabled": false,
+        "authenticationMode": "Password",
+        "host": "ssh.example.com",
+        "port": 22,
+        "username": "ssh_user",
+        "password": "change-me",
+        "localPort": 0
+      },
+      "commandTimeoutSeconds": 60,
+      "readOnlyMode": true
+    },
+    "mysql": {
+      "displayName": "Remote MySQL",
+      "engine": "MySql",
+      "providerInvariantName": "MySqlConnector",
+      "factoryAssembly": "MySqlConnector",
+      "factoryTypeName": "MySqlConnector.MySqlConnectorFactory",
+      "endpoint": {
+        "host": "localhost",
+        "port": 3306,
+        "database": "example",
+        "username": "readonly_user",
+        "password": "change-me"
+      },
+      "commandTimeoutSeconds": 60,
+      "readOnlyMode": true,
+      "openingIdentifierQuote": "`",
+      "closingIdentifierQuote": "`"
+    },
+    "sqlite": {
+      "displayName": "Local SQLite",
+      "engine": "SQLite",
+      "providerInvariantName": "Microsoft.Data.Sqlite",
+      "factoryAssembly": "Microsoft.Data.Sqlite",
+      "factoryTypeName": "Microsoft.Data.Sqlite.SqliteFactory",
+      "endpoint": {
+        "host": "local.db",
+        "readOnlySqlite": true
+      },
+      "commandTimeoutSeconds": 60,
+      "readOnlyMode": true
+    }
+  },
+  "defaults": {
+    "format": "json",
+    "batchSize": 1000,
+    "includeSchema": true,
+    "safety": {
+      "allowNonQueryOperations": false,
+      "requireReadOnlySql": true,
+      "refuseMultipleStatements": true,
+      "defaultMaxRows": null
+    }
+  }
+}
