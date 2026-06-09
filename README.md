@@ -35,6 +35,8 @@ After the first successful `Preview`, the GUI caches database structure and fill
 
 The GUI defaults to exporting the currently selected single table. To export multiple tables, select multiple entries in the table list; the scope switches to `tables`. To export the entire database, explicitly set the scope to `database`.
 
+`Scope` is the active mode switch in the GUI. In `query` mode, only the SQL editor is used for export and table selection is disabled. In `table` or `tables` mode, SQL is disabled and the selected table controls are used. In `database` mode, table and SQL inputs are disabled and the entire database is exported.
+
 ## Provider Configuration
 
 The core library does not hard-code database drivers. The CLI and GUI hosts currently reference common ADO.NET providers:

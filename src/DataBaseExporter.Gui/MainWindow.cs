@@ -32,7 +32,6 @@ public sealed class MainWindow : Window
     private readonly TextBlock _connectionStatus = new() { TextWrapping = TextWrapping.Wrap };
 
     private readonly TextBox _configPath = new() { PlaceholderText = "examples\\config.sample.json" };
-    private readonly ComboBox _editorConnections = new() { MinWidth = 220 };
     private readonly TextBox _connectionName = new() { PlaceholderText = "local-postgres" };
     private readonly ComboBox _engine = new() { MinWidth = 160 };
     private readonly TextBox _host = new() { PlaceholderText = "localhost or database.example.com" };
@@ -86,11 +85,15 @@ public sealed class MainWindow : Window
 
         _preview.Click += async (_, _) => await PreviewAsync();
         _export.Click += async (_, _) => await ExportAsync();
-        _quickConnections.SelectionChanged += (_, _) => RestorePreviewForSelectedConnection();
+        _scope.SelectionChanged += (_, _) => ApplyScopeUiState();
+        _quickConnections.SelectionChanged += (_, _) =>
+        {
+            RestorePreviewForSelectedConnection();
+            FillEditorFromSelectedConnection();
+        };
         _schema.SelectionChanged += (_, _) => RefreshTablesForSelectedSchema();
         _table.SelectionChanged += (_, _) => ShowSelectedDropdownTable();
         _tables.SelectionChanged += (_, _) => ShowSelectedTable();
-        _editorConnections.SelectionChanged += (_, _) => FillEditorFromSelectedConnection();
         _engine.SelectionChanged += (_, _) => ApplyEngineDefaults();
         _useSsh.Click += (_, _) => ApplySshUiState();
         _sshAuthMode.SelectionChanged += (_, _) => ApplySshUiState();
@@ -100,6 +103,7 @@ public sealed class MainWindow : Window
         _tables.SelectionMode = SelectionMode.Multiple;
         RefreshConnectionLists();
         ApplyEngineDefaults();
+        ApplyScopeUiState();
     }
 
     private Control BuildLayout()
@@ -243,7 +247,6 @@ public sealed class MainWindow : Window
             {
                 new TextBlock { Text = "Connection", FontWeight = FontWeight.SemiBold },
                 Row(
-                    Field("Existing", _editorConnections, 220),
                     Field("Name", _connectionName, 220),
                     Field("Engine", _engine, 160),
                     Field("Timeout", _timeout, 110)),
@@ -430,7 +433,6 @@ public sealed class MainWindow : Window
     {
         try
         {
-            NormalizeScopeBeforeExport();
             var request = new ExportRequest
             {
                 ConnectionName = RequireSelection(_quickConnections, "Connection"),
@@ -452,24 +454,6 @@ public sealed class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus(ex.Message, isError: true);
-        }
-    }
-
-    private void NormalizeScopeBeforeExport()
-    {
-        if (string.Equals(_scope.SelectedItem as string, "query", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        var selectedTables = GetSelectedTables();
-        if (selectedTables.Count > 1)
-        {
-            _scope.SelectedItem = "tables";
-        }
-        else if (selectedTables.Count == 1 && !string.Equals(_scope.SelectedItem as string, "database", StringComparison.OrdinalIgnoreCase))
-        {
-            _scope.SelectedItem = "table";
         }
     }
 
@@ -531,7 +515,7 @@ public sealed class MainWindow : Window
 
     private void FillEditorFromSelectedConnection()
     {
-        if (_editorConnections.SelectedItem is not string name || !_configuration.Connections.TryGetValue(name, out var connection))
+        if (_quickConnections.SelectedItem is not string name || !_configuration.Connections.TryGetValue(name, out var connection))
         {
             return;
         }
@@ -643,12 +627,10 @@ public sealed class MainWindow : Window
     {
         var names = _configuration.Connections.Keys.OrderBy(x => x).ToArray();
         _quickConnections.ItemsSource = names;
-        _editorConnections.ItemsSource = names;
 
         if (names.Length == 0)
         {
             _quickConnections.SelectedIndex = -1;
-            _editorConnections.SelectedIndex = -1;
             ApplyPreview(Array.Empty<DatabaseTablePreview>());
             return;
         }
@@ -660,8 +642,37 @@ public sealed class MainWindow : Window
         }
 
         _quickConnections.SelectedIndex = selected;
-        _editorConnections.SelectedIndex = selected;
+        FillEditorFromSelectedConnection();
         RestorePreviewForSelectedConnection();
+    }
+
+    private void ApplyScopeUiState()
+    {
+        var scope = _scope.SelectedItem as string ?? "table";
+        var isDatabase = string.Equals(scope, "database", StringComparison.OrdinalIgnoreCase);
+        var isTable = string.Equals(scope, "table", StringComparison.OrdinalIgnoreCase);
+        var isTables = string.Equals(scope, "tables", StringComparison.OrdinalIgnoreCase);
+        var isQuery = string.Equals(scope, "query", StringComparison.OrdinalIgnoreCase);
+
+        _schema.IsEnabled = isTable || isTables;
+        _table.IsEnabled = isTable;
+        _tables.IsEnabled = isTable || isTables;
+        _sql.IsEnabled = isQuery;
+
+        _tables.SelectionMode = isTables ? SelectionMode.Multiple : SelectionMode.Single;
+        if (isDatabase || isQuery)
+        {
+            _tables.SelectedItems?.Clear();
+        }
+        else if (isTable && _tables.SelectedItems?.Count > 1)
+        {
+            var selectedIndex = _tables.SelectedIndex;
+            _tables.SelectedItems.Clear();
+            if (selectedIndex >= 0)
+            {
+                _tables.SelectedIndex = selectedIndex;
+            }
+        }
     }
 
     private void ApplyEngineDefaults()
@@ -711,11 +722,14 @@ public sealed class MainWindow : Window
         var table = _visiblePreview[index];
         SelectSchemaAndTable(table.Table);
         ShowTableDetails(table);
-        if (_tables.SelectedItems?.Count > 1)
+        if (_tables.IsEnabled && _tables.SelectedItems?.Count > 1)
         {
             _scope.SelectedItem = "tables";
         }
-        else if (string.Equals(_scope.SelectedItem as string, "database", StringComparison.OrdinalIgnoreCase))
+        else if (_tables.IsEnabled
+            && (string.Equals(_scope.SelectedItem as string, "database", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(_scope.SelectedItem as string, "query", StringComparison.OrdinalIgnoreCase))
+        )
         {
             _scope.SelectedItem = "table";
         }
@@ -798,7 +812,10 @@ public sealed class MainWindow : Window
             _tables.SelectedIndex = index;
         }
 
-        if (string.Equals(_scope.SelectedItem as string, "database", StringComparison.OrdinalIgnoreCase))
+        if (_table.IsEnabled
+            && (string.Equals(_scope.SelectedItem as string, "database", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(_scope.SelectedItem as string, "query", StringComparison.OrdinalIgnoreCase))
+        )
         {
             _scope.SelectedItem = "table";
         }

@@ -24,6 +24,8 @@ GUI 启动后不会自动载入配置文件。先进入 `Connections` 页面手�
 
 GUI 默认导出当前选中的单表。需要导出多个表时，在左侧表列表中多选，范围会切换为 `tables`；需要导出全库时，手动将范围切换为 `database`。
 
+`Scope` 是 GUI 的当前模式开关。`query` 模式只使用 SQL 编辑器导出，表格选择会被禁用；`table` 或 `tables` 模式会禁用 SQL，使用表格选择控件；`database` 模式会禁用表格和 SQL 输入，并导出全数据库。
+
 ```powershell
 dotnet run --project src\DataBaseExporter.Gui
 ```
