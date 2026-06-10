@@ -156,14 +156,14 @@ ORDER BY ORDINAL_POSITION
             var name = reader.GetString(0);
             var dataType = reader.GetString(1);
             var isNullable = string.Equals(reader.GetString(2), "YES", StringComparison.OrdinalIgnoreCase);
-            int? size = null;
+            long? size = null;
             if (!await reader.IsDBNullAsync(3, cancellationToken))
             {
-                size = Convert.ToInt32(reader.GetValue(3));
+                size = Convert.ToInt64(reader.GetValue(3));
             }
             else if (!await reader.IsDBNullAsync(4, cancellationToken))
             {
-                size = Convert.ToInt32(reader.GetValue(4));
+                size = Convert.ToInt64(reader.GetValue(4));
             }
 
             columns.Add(new DatabaseColumn(name, dataType, isNullable, size));
@@ -240,6 +240,6 @@ public readonly record struct DatabaseTable(string? Schema, string Name)
     public override string ToString() => string.IsNullOrWhiteSpace(Schema) ? Name : $"{Schema}.{Name}";
 }
 
-public sealed record DatabaseColumn(string Name, string DataType, bool? IsNullable, int? Size);
+public sealed record DatabaseColumn(string Name, string DataType, bool? IsNullable, long? Size);
 
 public sealed record DatabaseTablePreview(DatabaseTable Table, IReadOnlyList<DatabaseColumn> Columns, long? RowCount);

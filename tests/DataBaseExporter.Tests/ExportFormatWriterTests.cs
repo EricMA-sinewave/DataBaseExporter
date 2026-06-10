@@ -22,6 +22,7 @@ public sealed class ExportFormatWriterTests
         using var document = await JsonDocument.ParseAsync(stream);
         Assert.AreEqual("test", document.RootElement.GetProperty("connection").GetString());
         Assert.AreEqual(1, document.RootElement.GetProperty("resultSets")[0].GetProperty("rowCount").GetInt32());
+        Assert.AreEqual(4_294_967_295L, document.RootElement.GetProperty("resultSets")[0].GetProperty("columns")[1].GetProperty("size").GetInt64());
         Assert.AreEqual("Alice", document.RootElement.GetProperty("resultSets")[0].GetProperty("rows")[0].GetProperty("Name").GetString());
     }
 
@@ -63,7 +64,7 @@ public sealed class ExportFormatWriterTests
                 new[]
                 {
                     new DatabaseColumn("Id", "int", false, null),
-                    new DatabaseColumn("Name", "nvarchar", true, 100)
+                    new DatabaseColumn("Name", "longtext", true, 4_294_967_295L)
                 },
                 "SELECT * FROM Users"));
 

@@ -4,6 +4,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 using DataBaseExporter.Core.Configuration;
 using DataBaseExporter.Core.Database;
 using DataBaseExporter.Core.Exporting;
@@ -31,8 +32,12 @@ public sealed class MainWindow : Window
     private readonly Button _addItemTableKey = new() { Content = "+" };
     private readonly Button _addItemRelationship = new() { Content = "+" };
     private readonly Button _validateItems = new() { Content = "Validate Items Profile" };
+    private readonly Button _loadItemProfile = new() { Content = "Load Profile" };
+    private readonly Button _saveItemProfile = new() { Content = "Save Profile" };
     private readonly TextBlock _itemValidation = new() { TextWrapping = TextWrapping.Wrap };
     private readonly NumericUpDown _itemMaxDepth = new() { Minimum = 1, Maximum = 100, Increment = 1, Value = 20 };
+    private readonly NumericUpDown _itemBatchSize = new() { Minimum = 1, Maximum = 1000, Increment = 10, Value = 100 };
+    private readonly NumericUpDown _itemQueryDelay = new() { Minimum = 0, Maximum = 60000, Increment = 50, Value = 0 };
     private readonly TextBox _output = new() { PlaceholderText = "exports\\data.json" };
     private readonly NumericUpDown _maxRows = new() { Minimum = 0, Maximum = decimal.MaxValue, Increment = 100, PlaceholderText = "0 = unlimited" };
     private readonly CheckBox _overwrite = new() { Content = "Overwrite" };
@@ -77,6 +82,7 @@ public sealed class MainWindow : Window
     private readonly Dictionary<string, DatabaseTablePreview> _previewByTableLabel = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ItemTableKeyRow> _itemTableKeyRows = new();
     private readonly List<ItemRelationshipRow> _itemRelationshipRows = new();
+    private ItemExportProfile? _pendingItemProfile;
     private readonly Dictionary<string, IReadOnlyList<DatabaseTablePreview>> _previewCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _connectionsAllowedToPersistSecrets = new(StringComparer.OrdinalIgnoreCase);
 
@@ -114,6 +120,8 @@ public sealed class MainWindow : Window
         _addItemTableKey.Click += (_, _) => AddItemTableKeyRow();
         _addItemRelationship.Click += (_, _) => AddItemRelationshipRow();
         _validateItems.Click += (_, _) => ValidateItemProfileUi(showSuccess: true, throwOnError: false);
+        _loadItemProfile.Click += async (_, _) => await LoadItemProfileAsync();
+        _saveItemProfile.Click += async (_, _) => await SaveItemProfileAsync();
         _engine.SelectionChanged += (_, _) => ApplyEngineDefaults();
         _useSsh.Click += (_, _) => ApplySshUiState();
         _sshAuthMode.SelectionChanged += (_, _) => ApplySshUiState();
@@ -265,7 +273,7 @@ public sealed class MainWindow : Window
             Children =
             {
                 new TextBlock { Text = "Items Export", FontWeight = FontWeight.SemiBold },
-                Row(Field("Root Schema", _itemRootSchema, 140), Field("Root Table", _itemRootTable, 220), Field("Root Key", _itemRootKey, 180), Field("Max Depth", _itemMaxDepth, 130), _validateItems),
+                Row(Field("Root Schema", _itemRootSchema, 140), Field("Root Table", _itemRootTable, 220), Field("Root Key", _itemRootKey, 180), Field("Max Depth", _itemMaxDepth, 130), Field("Batch Size", _itemBatchSize, 130), Field("Delay Ms", _itemQueryDelay, 120), _validateItems, _loadItemProfile, _saveItemProfile),
                 BuildDynamicRowsPanel("Table Keys", _addItemTableKey, _itemTableKeyRowsPanel),
                 BuildDynamicRowsPanel("Relationships", _addItemRelationship, _itemRelationshipRowsPanel),
                 _itemValidation
@@ -323,9 +331,13 @@ public sealed class MainWindow : Window
 
     private Control BuildConfigFilePanel()
     {
+        var open = new Button { Content = "Open..." };
         var load = new Button { Content = "Load Config" };
+        var saveAs = new Button { Content = "Save As..." };
         var save = new Button { Content = "Save Config" };
+        open.Click += async (_, _) => await PickAndLoadConfigurationAsync();
         load.Click += async (_, _) => await LoadConfigurationAsync();
+        saveAs.Click += async (_, _) => await PickAndSaveConfigurationAsync();
         save.Click += async (_, _) => await SaveConfigurationAsync();
 
         return new StackPanel
@@ -340,7 +352,9 @@ public sealed class MainWindow : Window
                     Children =
                     {
                         DockRight(save),
+                        DockRight(saveAs),
                         DockRight(load),
+                        DockRight(open),
                         _configPath
                     }
                 }
@@ -426,6 +440,30 @@ public sealed class MainWindow : Window
         }
     }
 
+    private async Task PickAndLoadConfigurationAsync()
+    {
+        var path = await PickOpenJsonPathAsync("Open connection configuration");
+        if (path is null)
+        {
+            return;
+        }
+
+        _configPath.Text = path;
+        await LoadConfigurationAsync();
+    }
+
+    private async Task PickAndSaveConfigurationAsync()
+    {
+        var path = await PickSaveJsonPathAsync("Save connection configuration", Path.GetFileName(_configPath.Text) ?? "connections.json");
+        if (path is null)
+        {
+            return;
+        }
+
+        _configPath.Text = path;
+        await SaveConfigurationAsync();
+    }
+
     private async Task LoadConfigurationAsync()
     {
         try
@@ -440,6 +478,55 @@ public sealed class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus(ex.Message, isError: true);
+        }
+    }
+
+    private async Task LoadItemProfileAsync()
+    {
+        try
+        {
+            var path = await PickOpenJsonPathAsync("Open items profile");
+            if (path is null)
+            {
+                return;
+            }
+
+            await using var stream = File.OpenRead(path);
+            var profile = await JsonSerializer.DeserializeAsync<ItemExportProfile>(stream, DatabaseExportConfiguration.CreateJsonOptions())
+                ?? throw new InvalidOperationException("Items profile file is empty or invalid.");
+            _scope.SelectedItem = "items";
+            ApplyItemProfile(profile);
+            SetStatus($"Loaded items profile: {path}");
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Load items profile failed. " + BuildDetailedMessage(ex), isError: true);
+        }
+    }
+
+    private async Task SaveItemProfileAsync()
+    {
+        try
+        {
+            _scope.SelectedItem = "items";
+            var profile = BuildItemProfile() ?? throw new InvalidOperationException("Items profile is required.");
+            var suggestedName = string.IsNullOrWhiteSpace(profile.RootTable)
+                ? "item-profile.json"
+                : $"{profile.RootTable}-items-profile.json";
+            var path = await PickSaveJsonPathAsync("Save items profile", suggestedName);
+            if (path is null)
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".");
+            await using var stream = File.Create(path);
+            await JsonSerializer.SerializeAsync(stream, profile, DatabaseExportConfiguration.CreateJsonOptions());
+            SetStatus($"Saved items profile: {path}");
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Save items profile failed. " + BuildDetailedMessage(ex), isError: true);
         }
     }
 
@@ -796,6 +883,8 @@ public sealed class MainWindow : Window
         _itemRootTable.IsEnabled = isItems;
         _itemRootKey.IsEnabled = isItems;
         _itemMaxDepth.IsEnabled = isItems;
+        _itemBatchSize.IsEnabled = isItems;
+        _itemQueryDelay.IsEnabled = isItems;
         _addItemTableKey.IsEnabled = isItems;
         _addItemRelationship.IsEnabled = isItems;
         _validateItems.IsEnabled = isItems;
@@ -908,6 +997,11 @@ public sealed class MainWindow : Window
         _schema.SelectedIndex = schemaItems.Length > 0 ? 0 : -1;
         RefreshItemSchemaChoices();
         RefreshItemRowChoices();
+        if (_pendingItemProfile is not null)
+        {
+            ApplyItemProfile(_pendingItemProfile);
+        }
+
         RefreshTablesForSelectedSchema();
     }
 
@@ -1046,7 +1140,9 @@ public sealed class MainWindow : Window
             RootKeyColumn = rootKey,
             TableKeys = tableKeys,
             Relationships = BuildItemRelationships(),
-            MaxDepth = _itemMaxDepth.Value is null ? 20 : decimal.ToInt32(_itemMaxDepth.Value.Value)
+            MaxDepth = _itemMaxDepth.Value is null ? 20 : decimal.ToInt32(_itemMaxDepth.Value.Value),
+            BatchSize = _itemBatchSize.Value is null ? 100 : decimal.ToInt32(_itemBatchSize.Value.Value),
+            QueryDelayMilliseconds = _itemQueryDelay.Value is null ? 0 : decimal.ToInt32(_itemQueryDelay.Value.Value)
         };
     }
 
@@ -1202,7 +1298,96 @@ public sealed class MainWindow : Window
         RefreshColumnChoices(table, column, selectedColumn);
     }
 
-    private void AddItemRelationshipRow()
+    private void ApplyItemProfile(ItemExportProfile profile)
+    {
+        if (_previewByTableLabel.Count == 0)
+        {
+            _pendingItemProfile = profile;
+            _itemValidation.Text = "Items profile loaded. Run Preview to populate tables and columns.";
+            _itemValidation.Foreground = Brushes.DarkSlateGray;
+            return;
+        }
+
+        var root = ResolveProfileTable(profile.RootSchema, profile.RootTable)
+            ?? throw new InvalidOperationException($"Root table '{BuildTableLabel(profile.RootSchema, profile.RootTable)}' is not available in the current preview.");
+
+        _itemRootSchema.SelectedItem = ToSchemaLabel(root.Table.Schema);
+        RefreshItemRootTables();
+        _itemRootTable.SelectedItem = root.Table.ToString();
+        RefreshItemRootKeyColumns();
+        _itemRootKey.SelectedItem = profile.RootKeyColumn;
+        _itemMaxDepth.Value = profile.MaxDepth <= 0 ? 20 : profile.MaxDepth;
+        _itemBatchSize.Value = profile.BatchSize <= 0 ? 100 : profile.BatchSize;
+        _itemQueryDelay.Value = profile.QueryDelayMilliseconds < 0 ? 0 : profile.QueryDelayMilliseconds;
+
+        ClearItemProfileRows();
+        var addedTableKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { root.Table.ToString() };
+        foreach (var pair in profile.TableKeys.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            var table = ResolveProfileTableKey(pair.Key)
+                ?? throw new InvalidOperationException($"Table key mapping refers to unavailable table '{pair.Key}'.");
+            if (!addedTableKeys.Add(table.Table.ToString()))
+            {
+                continue;
+            }
+
+            EnsureColumnExists(table.Table, pair.Value);
+            AddItemTableKeyRow(table.Table.ToString(), pair.Value);
+        }
+
+        foreach (var relationship in profile.Relationships)
+        {
+            var from = ResolveProfileTable(relationship.FromSchema, relationship.FromTable)
+                ?? throw new InvalidOperationException($"Relationship source table '{BuildTableLabel(relationship.FromSchema, relationship.FromTable)}' is not available in the current preview.");
+            var to = ResolveProfileTable(relationship.ToSchema, relationship.ToTable)
+                ?? throw new InvalidOperationException($"Relationship target table '{BuildTableLabel(relationship.ToSchema, relationship.ToTable)}' is not available in the current preview.");
+            EnsureColumnExists(from.Table, relationship.FromColumn);
+            EnsureColumnExists(to.Table, relationship.ToColumn);
+            AddItemRelationshipRow(from.Table.ToString(), relationship.FromColumn, to.Table.ToString(), relationship.ToColumn);
+        }
+
+        _pendingItemProfile = null;
+        ValidateItemProfileUi(showSuccess: true, throwOnError: false);
+    }
+
+    private void ClearItemProfileRows()
+    {
+        _itemTableKeyRows.Clear();
+        _itemTableKeyRowsPanel.Children.Clear();
+        _itemRelationshipRows.Clear();
+        _itemRelationshipRowsPanel.Children.Clear();
+    }
+
+    private DatabaseTablePreview? ResolveProfileTableKey(string tableKey)
+    {
+        var parts = tableKey.Split('.', 2, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 2
+            ? ResolveProfileTable(parts[0], parts[1])
+            : ResolveProfileTable(null, tableKey);
+    }
+
+    private DatabaseTablePreview? ResolveProfileTable(string? schema, string table)
+    {
+        var tableLabel = BuildTableLabel(schema, table);
+        if (_previewByTableLabel.TryGetValue(tableLabel, out var preview))
+        {
+            return preview;
+        }
+
+        var matches = _lastPreview
+            .Where(x => string.Equals(x.Table.Name, table, StringComparison.OrdinalIgnoreCase)
+                && (schema is null || string.Equals(NormalizeSchema(x.Table.Schema), NormalizeSchema(schema), StringComparison.OrdinalIgnoreCase)))
+            .Take(2)
+            .ToArray();
+        return matches.Length == 1 ? matches[0] : null;
+    }
+
+    private static string BuildTableLabel(string? schema, string table)
+    {
+        return string.IsNullOrWhiteSpace(schema) ? table : $"{schema}.{table}";
+    }
+
+    private void AddItemRelationshipRow(string? selectedFromTable = null, string? selectedFromColumn = null, string? selectedToTable = null, string? selectedToColumn = null)
     {
         var fromTable = new ComboBox { MinWidth = 190 };
         var fromColumn = new ComboBox { MinWidth = 150 };
@@ -1228,10 +1413,10 @@ public sealed class MainWindow : Window
 
         _itemRelationshipRows.Add(row);
         _itemRelationshipRowsPanel.Children.Add(container);
-        RefreshTableChoices(fromTable);
-        RefreshColumnChoices(fromTable, fromColumn);
-        RefreshTableChoices(toTable);
-        RefreshColumnChoices(toTable, toColumn);
+        RefreshTableChoices(fromTable, selectedFromTable);
+        RefreshColumnChoices(fromTable, fromColumn, selectedFromColumn);
+        RefreshTableChoices(toTable, selectedToTable);
+        RefreshColumnChoices(toTable, toColumn, selectedToColumn);
     }
 
     private void RefreshItemSchemaChoices()
@@ -1447,6 +1632,48 @@ public sealed class MainWindow : Window
             _ => "selection"
         };
     }
+
+    private async Task<string?> PickOpenJsonPathAsync(string title)
+    {
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = title,
+            AllowMultiple = false,
+            FileTypeFilter = new[] { JsonFileType }
+        });
+        var file = files.FirstOrDefault();
+        if (file is null)
+        {
+            return null;
+        }
+
+        return file.TryGetLocalPath()
+            ?? throw new InvalidOperationException("The selected file is not available as a local path.");
+    }
+
+    private async Task<string?> PickSaveJsonPathAsync(string title, string suggestedFileName)
+    {
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = title,
+            SuggestedFileName = suggestedFileName,
+            DefaultExtension = "json",
+            FileTypeChoices = new[] { JsonFileType }
+        });
+        if (file is null)
+        {
+            return null;
+        }
+
+        return file.TryGetLocalPath()
+            ?? throw new InvalidOperationException("The selected file is not available as a local path.");
+    }
+
+    private static FilePickerFileType JsonFileType { get; } = new("JSON files")
+    {
+        Patterns = new[] { "*.json" },
+        MimeTypes = new[] { "application/json" }
+    };
 
     private static WrapPanel Row(params Control[] controls)
     {

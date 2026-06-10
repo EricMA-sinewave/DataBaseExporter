@@ -9,8 +9,11 @@ public static class ConnectionStringComposer
     {
         if (options.Endpoint is null)
         {
-            return options.ConnectionString
+            var connectionString = options.ConnectionString
                 ?? throw new InvalidOperationException("Connection string is required when endpoint is not configured.");
+            return options.Engine == DatabaseEngine.MySql
+                ? ApplyMySqlZeroDateTimeDefault(connectionString)
+                : connectionString;
         }
 
         var endpoint = options.Endpoint;
@@ -61,6 +64,11 @@ public static class ConnectionStringComposer
                 AddIfPresent(builder, "Database", endpoint.Database);
                 AddIfPresent(builder, "User ID", endpoint.Username);
                 AddIfPresent(builder, "Password", endpoint.Password);
+                if (!HasMySqlZeroDateTimeOption(endpoint.AdditionalOptions))
+                {
+                    builder["ConvertZeroDateTime"] = true;
+                }
+
                 break;
             case DatabaseEngine.SQLite:
                 builder["Data Source"] = endpoint.Host;
@@ -80,6 +88,38 @@ public static class ConnectionStringComposer
         }
 
         return builder.ConnectionString;
+    }
+
+    private static string ApplyMySqlZeroDateTimeDefault(string connectionString)
+    {
+        var builder = new DbConnectionStringBuilder { ConnectionString = connectionString };
+        if (!HasMySqlZeroDateTimeOption(builder))
+        {
+            builder["ConvertZeroDateTime"] = true;
+        }
+
+        return builder.ConnectionString;
+    }
+
+    private static bool HasMySqlZeroDateTimeOption(IDictionary<string, string> options)
+    {
+        return options.Keys.Any(IsMySqlZeroDateTimeOption);
+    }
+
+    private static bool HasMySqlZeroDateTimeOption(DbConnectionStringBuilder builder)
+    {
+        return builder.Keys.Cast<string>().Any(IsMySqlZeroDateTimeOption);
+    }
+
+    private static bool IsMySqlZeroDateTimeOption(string key)
+    {
+        var normalized = key.Replace(" ", "", StringComparison.Ordinal)
+            .Replace("_", "", StringComparison.Ordinal)
+            .Replace("-", "", StringComparison.Ordinal);
+        return string.Equals(normalized, "AllowZeroDateTime", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, "ConvertZeroDateTime", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, "AllowZeroDatetime", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, "ConvertZeroDatetime", StringComparison.OrdinalIgnoreCase);
     }
 
     public static int? GetDefaultPort(DatabaseEngine engine)

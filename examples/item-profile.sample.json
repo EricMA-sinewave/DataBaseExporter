@@ -34,5 +34,7 @@
       "toColumn": "id"
     }
   ],
-  "maxDepth": 20
+  "maxDepth": 20,
+  "batchSize": 100,
+  "queryDelayMilliseconds": 0
 }

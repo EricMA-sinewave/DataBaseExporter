@@ -34,6 +34,44 @@ public sealed class ConfigurationAndConnectionStringTests
     }
 
     [TestMethod]
+    public void Compose_MySqlEndpoint_AddsZeroDateTimeHandling()
+    {
+        var options = new DatabaseConnectionOptions
+        {
+            Engine = DatabaseEngine.MySql,
+            ProviderInvariantName = "MySqlConnector",
+            Endpoint = new DatabaseEndpointOptions
+            {
+                Host = "db.example.com",
+                Port = 3306,
+                Database = "app",
+                Username = "readonly",
+                Password = "secret"
+            }
+        };
+
+        var connectionString = ConnectionStringComposer.Compose(options);
+
+        StringAssert.Contains(connectionString, "ConvertZeroDateTime=True");
+    }
+
+    [TestMethod]
+    public void Compose_MySqlRawConnectionString_PreservesExplicitZeroDateTimeHandling()
+    {
+        var options = new DatabaseConnectionOptions
+        {
+            Engine = DatabaseEngine.MySql,
+            ProviderInvariantName = "MySqlConnector",
+            ConnectionString = "Server=db.example.com;Database=app;User ID=readonly;AllowZeroDateTime=True"
+        };
+
+        var connectionString = ConnectionStringComposer.Compose(options);
+
+        Assert.IsTrue(connectionString.Contains("AllowZeroDateTime=True", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(connectionString.Contains("ConvertZeroDateTime", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
     public async Task LoadAsync_ReadsStringEnumEngine()
     {
         var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.json");
@@ -159,7 +197,9 @@ public sealed class ConfigurationAndConnectionStringTests
       "toColumn": "avatar_id"
     }
   ],
-  "maxDepth": 8
+  "maxDepth": 8,
+  "batchSize": 50,
+  "queryDelayMilliseconds": 25
 }
 """, DatabaseExportConfiguration.CreateJsonOptions());
 
@@ -169,5 +209,7 @@ public sealed class ConfigurationAndConnectionStringTests
         Assert.AreEqual(1, profile.Relationships.Count);
         Assert.AreEqual("inventory", profile.Relationships[0].ToTable);
         Assert.AreEqual(8, profile.MaxDepth);
+        Assert.AreEqual(50, profile.BatchSize);
+        Assert.AreEqual(25, profile.QueryDelayMilliseconds);
     }
 }

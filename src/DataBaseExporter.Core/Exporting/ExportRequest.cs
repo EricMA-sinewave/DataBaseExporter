@@ -55,6 +55,10 @@ public sealed class ItemExportProfile
     public IReadOnlyList<ItemRelationship> Relationships { get; init; } = Array.Empty<ItemRelationship>();
 
     public int MaxDepth { get; init; } = 20;
+
+    public int BatchSize { get; init; } = 100;
+
+    public int QueryDelayMilliseconds { get; init; }
 }
 
 public sealed record ItemRelationship(

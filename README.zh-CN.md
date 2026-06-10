@@ -29,20 +29,9 @@ GUI 默认导出当前选中的单表。需要导出多个表时，在左侧表�
 
 Items 导出使用关系图。从 root 表读取 key 值后，按配置的下游关系递归查找相关数据，并按每个 root key 生成一个自包含文件。`Max Rows` / `--max-rows` 用于限制测试用的 root key 数量；`0` 或空值表示无限制。该类型不写入 schema 元数据。看起来像 Base64 的字符串值会先解码再写入。
 
-GUI 的关系配置每行一条：
+Items 导出会按 `batchSize` 合并同一批 root key 的关系查询，降低逐 item 查询带来的数据库 round trip。`queryDelayMilliseconds` 可在批量查询之间加入短暂停顿，用于降低生产库压力。生产环境建议确保 root key 和 relationship 中的关联字段都有索引，并优先在只读副本或低峰期执行。
 
-```text
-avatar.id -> inventory.avatar_id
-inventory.item_id -> item_detail.id
-```
-
-GUI 的表主键配置每行一条：
-
-```text
-avatar=id
-inventory=id
-item_detail=id
-```
+GUI 的 Items 配置使用下拉框和 `+/-` 动态行维护 root key、Table Keys 和 Relationships，并可保存/加载 JSON profile。
 
 ```powershell
 dotnet run --project src\DataBaseExporter.Gui

@@ -40,20 +40,9 @@ The GUI defaults to exporting the currently selected single table. To export mul
 
 Items export uses a relationship graph. It reads key values from the root table, recursively follows configured downstream relationships, and writes one self-contained file per root key. `Max Rows` / `--max-rows` limits the number of root key values for testing; `0` or an empty value means unlimited. Schema metadata is omitted for this export type. String values that look like Base64 payloads are decoded before writing.
 
-GUI relationship text uses one relationship per line:
+Items export batches relationship queries for a group of root keys to reduce per-item database round trips. `batchSize` controls the root/query batch size, and `queryDelayMilliseconds` can add a short pause between batched queries to reduce production database pressure. For production use, make sure the root key and relationship columns are indexed, and prefer read replicas or off-peak windows.
 
-```text
-avatar.id -> inventory.avatar_id
-inventory.item_id -> item_detail.id
-```
-
-GUI table key text uses one primary key per line:
-
-```text
-avatar=id
-inventory=id
-item_detail=id
-```
+The GUI Items configuration uses dropdowns and `+/-` dynamic rows for root key, Table Keys, and Relationships, and can save/load JSON profiles.
 
 ## Provider Configuration
 

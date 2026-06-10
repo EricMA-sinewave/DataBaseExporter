@@ -9,6 +9,8 @@ namespace DataBaseExporter.Core.Exporting;
 
 public sealed class DatabaseExportService
 {
+    private const int MaxItemBatchSize = 1000;
+
     private readonly IDatabaseConnectionFactory _connectionFactory;
     private readonly ExportFormatRegistry _formatRegistry;
     private readonly SchemaReader _schemaReader;
@@ -66,6 +68,7 @@ public sealed class DatabaseExportService
                 writer,
                 outputPath,
                 maxRows,
+                batchSize,
                 request.Overwrite,
                 cancellationToken);
         }
@@ -192,6 +195,7 @@ public sealed class DatabaseExportService
         IExportFormatWriter writer,
         string outputDirectory,
         long? maxItems,
+        int configuredBatchSize,
         bool overwrite,
         CancellationToken cancellationToken)
     {
@@ -212,58 +216,256 @@ public sealed class DatabaseExportService
 
         var baseTable = new DatabaseTable(profile.RootSchema, profile.RootTable);
         var itemKeys = await ReadItemKeysAsync(connection, options, quoter, baseTable, profile.RootKeyColumn, maxItems, cancellationToken);
+        var rootBatchSize = NormalizeItemBatchSize(profile.BatchSize, configuredBatchSize);
         var summaries = new List<ResultSetSummary>(itemKeys.Count);
 
-        foreach (var key in itemKeys)
+        foreach (var keyBatch in itemKeys.Chunk(rootBatchSize))
         {
-            var filePath = Path.Combine(outputDirectory, SanitizeFileName(Convert.ToString(key) ?? "null") + writer.FileExtension);
-            if (File.Exists(filePath) && !overwrite)
-            {
-                throw new IOException($"Output file '{filePath}' already exists. Use overwrite to replace it.");
-            }
-
-            await using var file = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true);
-            await using var session = writer.CreateSession(file, new ExportWriterOptions(IncludeSchema: false));
-
-            await session.BeginAsync(new ExportMetadata(
-                request.ConnectionName,
-                ExportScope.Items,
-                Convert.ToString(key),
-                DateTimeOffset.UtcNow,
-                IncludeSchema: false), cancellationToken);
-
-            var itemTables = await ReadItemGraphAsync(
+            var graphs = await ReadItemGraphsBatchAsync(
                 connection,
                 quoter,
                 profile,
-                key,
+                keyBatch,
                 options.CommandTimeoutSeconds,
+                rootBatchSize,
                 cancellationToken);
 
-            long itemRows = 0;
-            foreach (var pair in itemTables.OrderBy(x => x.Key))
+            foreach (var key in keyBatch)
             {
-                var columns = pair.Value
-                    .SelectMany(row => row.Keys)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .Select(name => new DatabaseColumn(name, "unknown", null, null))
-                    .ToArray();
-
-                await session.BeginResultSetAsync(new ResultSetInfo(pair.Key, columns, null), cancellationToken);
-                foreach (var row in pair.Value)
+                if (!graphs.TryGetValue(BuildValueKey(key), out var graph))
                 {
-                    await session.WriteRowAsync(row, cancellationToken);
-                    itemRows++;
+                    graph = new ItemExportGraph(key);
                 }
 
-                await session.EndResultSetAsync(pair.Value.Count, cancellationToken);
+                summaries.Add(await WriteItemGraphAsync(
+                    writer,
+                    outputDirectory,
+                    overwrite,
+                    request.ConnectionName,
+                    graph,
+                    cancellationToken));
             }
-
-            await session.CompleteAsync(cancellationToken);
-            summaries.Add(new ResultSetSummary(Convert.ToString(key) ?? "null", itemRows));
         }
 
         return new ExportSummary(outputDirectory, writer.Format, summaries.Sum(x => x.RowCount), summaries);
+    }
+
+    private static async Task<ResultSetSummary> WriteItemGraphAsync(
+        IExportFormatWriter writer,
+        string outputDirectory,
+        bool overwrite,
+        string connectionName,
+        ItemExportGraph graph,
+        CancellationToken cancellationToken)
+    {
+        var itemName = Convert.ToString(graph.RootKey) ?? "null";
+        var filePath = Path.Combine(outputDirectory, SanitizeFileName(itemName) + writer.FileExtension);
+        if (File.Exists(filePath) && !overwrite)
+        {
+            throw new IOException($"Output file '{filePath}' already exists. Use overwrite to replace it.");
+        }
+
+        await using var file = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true);
+        await using var session = writer.CreateSession(file, new ExportWriterOptions(IncludeSchema: false));
+
+        await session.BeginAsync(new ExportMetadata(
+            connectionName,
+            ExportScope.Items,
+            itemName,
+            DateTimeOffset.UtcNow,
+            IncludeSchema: false), cancellationToken);
+
+        long itemRows = 0;
+        foreach (var pair in graph.Tables.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            var columns = pair.Value
+                .SelectMany(row => row.Keys)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(name => new DatabaseColumn(name, "unknown", null, null))
+                .ToArray();
+
+            await session.BeginResultSetAsync(new ResultSetInfo(pair.Key, columns, null), cancellationToken);
+            foreach (var row in pair.Value)
+            {
+                await session.WriteRowAsync(DecodeRowValues(row), cancellationToken);
+                itemRows++;
+            }
+
+            await session.EndResultSetAsync(pair.Value.Count, cancellationToken);
+        }
+
+        await session.CompleteAsync(cancellationToken);
+        return new ResultSetSummary(itemName, itemRows);
+    }
+
+    private static async Task<Dictionary<string, ItemExportGraph>> ReadItemGraphsBatchAsync(
+        DbConnection connection,
+        IdentifierQuoter quoter,
+        ItemExportProfile profile,
+        IReadOnlyList<object> rootKeys,
+        int commandTimeoutSeconds,
+        int queryBatchSize,
+        CancellationToken cancellationToken)
+    {
+        var rootTable = new DatabaseTable(profile.RootSchema, profile.RootTable);
+        var graphs = rootKeys
+            .GroupBy(BuildValueKey, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(x => x.Key, x => new ItemExportGraph(x.First()), StringComparer.OrdinalIgnoreCase);
+        var queue = new Queue<BatchedItemTraversalNode>();
+        var delay = TimeSpan.FromMilliseconds(profile.QueryDelayMilliseconds);
+
+        var rootRows = await ReadRowsByColumnInAsync(
+            connection,
+            quoter,
+            rootTable,
+            profile.RootKeyColumn,
+            rootKeys,
+            commandTimeoutSeconds,
+            queryBatchSize,
+            delay,
+            cancellationToken);
+
+        foreach (var row in rootRows)
+        {
+            if (!row.TryGetValue(profile.RootKeyColumn, out var rootValue) || rootValue is null)
+            {
+                continue;
+            }
+
+            if (graphs.TryGetValue(BuildValueKey(rootValue), out var graph))
+            {
+                AddItemRow(graph, queue, profile, rootTable, row, depth: 0);
+            }
+        }
+
+        while (queue.Count > 0)
+        {
+            var levelNodes = DrainTraversalLevel(queue);
+            foreach (var group in BuildRelationshipGroups(levelNodes, profile))
+            {
+                var targetTable = new DatabaseTable(group.Relationship.ToSchema, group.Relationship.ToTable);
+                var valueBuckets = BuildRelationshipValueBuckets(group.Nodes, group.Relationship.FromColumn);
+                if (valueBuckets.Count == 0)
+                {
+                    continue;
+                }
+
+                var targetRows = await ReadRowsByColumnInAsync(
+                    connection,
+                    quoter,
+                    targetTable,
+                    group.Relationship.ToColumn,
+                    valueBuckets.Values.Select(x => x.Value).ToArray(),
+                    commandTimeoutSeconds,
+                    queryBatchSize,
+                    delay,
+                    cancellationToken);
+
+                foreach (var targetRow in targetRows)
+                {
+                    if (!targetRow.TryGetValue(group.Relationship.ToColumn, out var targetValue) || targetValue is null)
+                    {
+                        continue;
+                    }
+
+                    if (!valueBuckets.TryGetValue(BuildValueKey(targetValue), out var bucket))
+                    {
+                        continue;
+                    }
+
+                    foreach (var rootKey in bucket.RootKeys)
+                    {
+                        if (graphs.TryGetValue(rootKey, out var graph))
+                        {
+                            AddItemRow(graph, queue, profile, targetTable, targetRow, group.Depth + 1);
+                        }
+                    }
+                }
+            }
+        }
+
+        return graphs;
+    }
+
+    private static IReadOnlyList<BatchedItemTraversalNode> DrainTraversalLevel(Queue<BatchedItemTraversalNode> queue)
+    {
+        var count = queue.Count;
+        var nodes = new List<BatchedItemTraversalNode>(count);
+        for (var i = 0; i < count; i++)
+        {
+            nodes.Add(queue.Dequeue());
+        }
+
+        return nodes;
+    }
+
+    private static IEnumerable<ItemRelationshipGroup> BuildRelationshipGroups(
+        IReadOnlyList<BatchedItemTraversalNode> nodes,
+        ItemExportProfile profile)
+    {
+        foreach (var tableGroup in nodes.GroupBy(x => BuildTableKey(x.Table), StringComparer.OrdinalIgnoreCase))
+        {
+            var tableNodes = tableGroup.ToArray();
+            if (tableNodes.Length == 0 || tableNodes[0].Depth >= profile.MaxDepth)
+            {
+                continue;
+            }
+
+            foreach (var relationship in profile.Relationships.Where(x => SameTable(new DatabaseTable(x.FromSchema, x.FromTable), tableNodes[0].Table)))
+            {
+                yield return new ItemRelationshipGroup(relationship, tableNodes, tableNodes[0].Depth);
+            }
+        }
+    }
+
+    private static Dictionary<string, RelationshipValueBucket> BuildRelationshipValueBuckets(
+        IReadOnlyList<BatchedItemTraversalNode> nodes,
+        string column)
+    {
+        var buckets = new Dictionary<string, RelationshipValueBucket>(StringComparer.OrdinalIgnoreCase);
+        foreach (var node in nodes)
+        {
+            if (!node.Row.TryGetValue(column, out var value) || value is null)
+            {
+                continue;
+            }
+
+            var valueKey = BuildValueKey(value);
+            if (!buckets.TryGetValue(valueKey, out var bucket))
+            {
+                bucket = new RelationshipValueBucket(value);
+                buckets[valueKey] = bucket;
+            }
+
+            bucket.RootKeys.Add(node.RootKey);
+        }
+
+        return buckets;
+    }
+
+    private static void AddItemRow(
+        ItemExportGraph graph,
+        Queue<BatchedItemTraversalNode> queue,
+        ItemExportProfile profile,
+        DatabaseTable table,
+        IReadOnlyDictionary<string, object?> row,
+        int depth)
+    {
+        var identity = BuildRowIdentity(profile, table, row);
+        if (!graph.Visited.Add(identity))
+        {
+            return;
+        }
+
+        var tableKey = BuildTableKey(table);
+        if (!graph.Tables.TryGetValue(tableKey, out var rows))
+        {
+            rows = new List<IReadOnlyDictionary<string, object?>>();
+            graph.Tables[tableKey] = rows;
+        }
+
+        rows.Add(row);
+        queue.Enqueue(new BatchedItemTraversalNode(graph.RootKeyIdentity, table, row, depth));
     }
 
     private static async Task<IReadOnlyList<object>> ReadItemKeysAsync(
@@ -377,13 +579,73 @@ public sealed class DatabaseExportService
             {
                 row[columns[i].Name] = await reader.IsDBNullAsync(i, cancellationToken)
                     ? null
-                    : DecodePossibleBase64(reader.GetValue(i));
+                    : reader.GetValue(i);
             }
 
             rows.Add(row);
         }
 
         return rows;
+    }
+
+    private static async Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> ReadRowsByColumnInAsync(
+        DbConnection connection,
+        IdentifierQuoter quoter,
+        DatabaseTable table,
+        string column,
+        IReadOnlyList<object> values,
+        int commandTimeoutSeconds,
+        int queryBatchSize,
+        TimeSpan queryDelay,
+        CancellationToken cancellationToken)
+    {
+        var rows = new List<IReadOnlyDictionary<string, object?>>();
+        foreach (var chunk in values.Where(x => x is not null).Chunk(queryBatchSize))
+        {
+            if (chunk.Length == 0)
+            {
+                continue;
+            }
+
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = BuildInQuery(quoter, table, column, chunk.Length);
+                command.CommandTimeout = commandTimeoutSeconds;
+                for (var i = 0; i < chunk.Length; i++)
+                {
+                    AddParameter(command, $"@p{i}", chunk[i]);
+                }
+
+                await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess | CommandBehavior.SingleResult, cancellationToken);
+                var columns = await ReadColumnsAsync(reader, cancellationToken);
+
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    var row = new Dictionary<string, object?>(columns.Count, StringComparer.OrdinalIgnoreCase);
+                    for (var i = 0; i < columns.Count; i++)
+                    {
+                        row[columns[i].Name] = await reader.IsDBNullAsync(i, cancellationToken)
+                            ? null
+                            : reader.GetValue(i);
+                    }
+
+                    rows.Add(row);
+                }
+            }
+
+            if (queryDelay > TimeSpan.Zero)
+            {
+                await Task.Delay(queryDelay, cancellationToken);
+            }
+        }
+
+        return rows;
+    }
+
+    private static string BuildInQuery(IdentifierQuoter quoter, DatabaseTable table, string column, int parameterCount)
+    {
+        var parameters = string.Join(", ", Enumerable.Range(0, parameterCount).Select(i => $"@p{i}"));
+        return $"SELECT * FROM {quoter.QuoteTable(table)} WHERE {quoter.QuoteIdentifier(column)} IN ({parameters})";
     }
 
     private static void AddItemRow(
@@ -528,8 +790,8 @@ public sealed class DatabaseExportService
         var column = quoter.QuoteIdentifier(itemKeyColumn);
         var tableName = quoter.QuoteTable(table);
         return engine == DatabaseEngine.SqlServer && maxItems is not null
-            ? $"SELECT TOP {maxItems.Value} {column} FROM {tableName} WHERE {column} IS NOT NULL"
-            : $"SELECT {column} FROM {tableName} WHERE {column} IS NOT NULL{BuildLimitClause(engine, maxItems)}";
+            ? $"SELECT DISTINCT TOP {maxItems.Value} {column} FROM {tableName} WHERE {column} IS NOT NULL"
+            : $"SELECT DISTINCT {column} FROM {tableName} WHERE {column} IS NOT NULL{BuildLimitClause(engine, maxItems)}";
     }
 
     private static string BuildLimitClause(DatabaseEngine engine, long? maxItems)
@@ -547,6 +809,16 @@ public sealed class DatabaseExportService
     private static long? NormalizeMaxRows(long? value)
     {
         return value is null or <= 0 ? null : value;
+    }
+
+    private static int NormalizeItemBatchSize(int profileBatchSize, int configuredBatchSize)
+    {
+        if (profileBatchSize > 0)
+        {
+            return Math.Min(profileBatchSize, MaxItemBatchSize);
+        }
+
+        return configuredBatchSize > 0 ? Math.Min(configuredBatchSize, MaxItemBatchSize) : 100;
     }
 
     private static object? DecodePossibleBase64(object? value)
@@ -568,6 +840,17 @@ public sealed class DatabaseExportService
         }
     }
 
+    private static IReadOnlyDictionary<string, object?> DecodeRowValues(IReadOnlyDictionary<string, object?> row)
+    {
+        var decoded = new Dictionary<string, object?>(row.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in row)
+        {
+            decoded[pair.Key] = DecodePossibleBase64(pair.Value);
+        }
+
+        return decoded;
+    }
+
     private static void AddParameter(DbCommand command, string name, object? value)
     {
         var parameter = command.CreateParameter();
@@ -585,6 +868,11 @@ public sealed class DatabaseExportService
     private static string BuildTableKey(DatabaseTable table)
     {
         return string.IsNullOrWhiteSpace(table.Schema) ? table.Name : $"{table.Schema}.{table.Name}";
+    }
+
+    private static string BuildValueKey(object value)
+    {
+        return $"{value.GetType().FullName}:{Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture)}";
     }
 
     private static string BuildRowIdentity(ItemExportProfile profile, DatabaseTable table, IReadOnlyDictionary<string, object?> row)
@@ -623,6 +911,21 @@ public sealed class DatabaseExportService
             throw new InvalidOperationException("Items export profile maxDepth must be greater than zero.");
         }
 
+        if (profile.BatchSize <= 0)
+        {
+            throw new InvalidOperationException("Items export profile batchSize must be greater than zero.");
+        }
+
+        if (profile.BatchSize > MaxItemBatchSize)
+        {
+            throw new InvalidOperationException($"Items export profile batchSize must be less than or equal to {MaxItemBatchSize}.");
+        }
+
+        if (profile.QueryDelayMilliseconds < 0)
+        {
+            throw new InvalidOperationException("Items export profile queryDelayMilliseconds cannot be negative.");
+        }
+
         foreach (var relationship in profile.Relationships)
         {
             if (string.IsNullOrWhiteSpace(relationship.FromTable)
@@ -645,6 +948,46 @@ public sealed class DatabaseExportService
     private sealed record ItemTraversalNode(
         DatabaseTable Table,
         IReadOnlyDictionary<string, object?> Row,
+        int Depth);
+
+    private sealed class ItemExportGraph
+    {
+        public ItemExportGraph(object rootKey)
+        {
+            RootKey = rootKey;
+            RootKeyIdentity = BuildValueKey(rootKey);
+        }
+
+        public object RootKey { get; }
+
+        public string RootKeyIdentity { get; }
+
+        public Dictionary<string, List<IReadOnlyDictionary<string, object?>>> Tables { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public HashSet<string> Visited { get; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed class RelationshipValueBucket
+    {
+        public RelationshipValueBucket(object value)
+        {
+            Value = value;
+        }
+
+        public object Value { get; }
+
+        public HashSet<string> RootKeys { get; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed record BatchedItemTraversalNode(
+        string RootKey,
+        DatabaseTable Table,
+        IReadOnlyDictionary<string, object?> Row,
+        int Depth);
+
+    private sealed record ItemRelationshipGroup(
+        ItemRelationship Relationship,
+        IReadOnlyList<BatchedItemTraversalNode> Nodes,
         int Depth);
 
     private static void ValidateRequest(ExportRequest request)
