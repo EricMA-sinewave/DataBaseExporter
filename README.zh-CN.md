@@ -6,7 +6,7 @@
 
 - 通过 JSON 配置管理多个本地或远程数据库连接。
 - 基于 ADO.NET `DbProviderFactory`，可扩展 SQL Server、PostgreSQL、MySQL、SQLite 等 provider。
-- 支持导出范围：全数据库、单表、自定义只读 SQL 查询。
+- 支持导出范围：全数据库、单表、多表、按主键整合的 Items、自定义只读 SQL 查询。
 - 支持导出格式：JSON、XML、XLS。XLS 使用 Excel 可打开的 SpreadsheetML 2003。
 - 支持导出前预览：表名、列结构、记录数。
 - 默认只允许读取型 SQL，并拒绝多语句和常见破坏性关键字。
@@ -17,6 +17,7 @@
 dotnet run --project src\DataBaseExporter.Cli -- preview --config examples\config.sample.json --connection sqlserver
 dotnet run --project src\DataBaseExporter.Cli -- export --config examples\config.sample.json --connection sqlserver --scope database --output exports\db.json --overwrite
 dotnet run --project src\DataBaseExporter.Cli -- export --config examples\config.sample.json --connection sqlserver --scope table --schema dbo --table Users --output exports\users.xml --format xml --overwrite
+dotnet run --project src\DataBaseExporter.Cli -- export --config examples\config.sample.json --connection mysql --scope items --item-profile examples\item-profile.sample.json --output exports\avatars --format json --max-rows 10 --overwrite
 dotnet run --project src\DataBaseExporter.Cli -- export --config examples\config.sample.json --connection sqlserver --scope query --sql "SELECT TOP 100 * FROM dbo.Users" --output exports\query.xls --format xls --overwrite
 ```
 
@@ -24,7 +25,24 @@ GUI 启动后不会自动载入配置文件。先进入 `Connections` 页面手�
 
 GUI 默认导出当前选中的单表。需要导出多个表时，在左侧表列表中多选，范围会切换为 `tables`；需要导出全库时，手动将范围切换为 `database`。
 
-`Scope` 是 GUI 的当前模式开关。`query` 模式只使用 SQL 编辑器导出，表格选择会被禁用；`table` 或 `tables` 模式会禁用 SQL，使用表格选择控件；`database` 模式会禁用表格和 SQL 输入，并导出全数据库。
+`Scope` 是 GUI 的当前模式开关。`query` 模式只使用 SQL 编辑器导出，表格选择会被禁用；`table` 或 `tables` 模式会禁用 SQL，使用表格选择控件；`items` 模式选择一个基础表和 item key 列，输出路径会被当作目录，每个 key 值写一个文件；`database` 模式会禁用表格和 SQL 输入，并导出全数据库。
+
+Items 导出使用关系图。从 root 表读取 key 值后，按配置的下游关系递归查找相关数据，并按每个 root key 生成一个自包含文件。`Max Rows` / `--max-rows` 用于限制测试用的 root key 数量；`0` 或空值表示无限制。该类型不写入 schema 元数据。看起来像 Base64 的字符串值会先解码再写入。
+
+GUI 的关系配置每行一条：
+
+```text
+avatar.id -> inventory.avatar_id
+inventory.item_id -> item_detail.id
+```
+
+GUI 的表主键配置每行一条：
+
+```text
+avatar=id
+inventory=id
+item_detail=id
+```
 
 ```powershell
 dotnet run --project src\DataBaseExporter.Gui

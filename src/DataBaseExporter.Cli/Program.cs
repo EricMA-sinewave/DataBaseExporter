@@ -1,6 +1,7 @@
 using DataBaseExporter.Core.Configuration;
 using DataBaseExporter.Core.Database;
 using DataBaseExporter.Core.Exporting;
+using System.Text.Json;
 
 var exitCode = await CliApplication.RunAsync(args);
 return exitCode;
@@ -78,6 +79,8 @@ internal static class CliApplication
             Scope = scope,
             Schema = options.Get("--schema"),
             Table = options.Get("--table"),
+            ItemKeyColumn = options.Get("--item-key"),
+            ItemProfile = await LoadItemProfileAsync(options.Get("--item-profile"), cancellationToken),
             Sql = options.Get("--sql"),
             Format = options.Get("--format"),
             OutputPath = options.GetRequired("--output"),
@@ -101,8 +104,9 @@ internal static class CliApplication
         {
             "database" or "db" or "all" => ExportScope.Database,
             "table" => ExportScope.Table,
+            "items" => ExportScope.Items,
             "query" or "sql" => ExportScope.Query,
-            _ => throw new InvalidOperationException($"Unsupported scope '{value}'. Use database, table, or query.")
+            _ => throw new InvalidOperationException($"Unsupported scope '{value}'. Use database, table, items, or query.")
         };
     }
 
@@ -115,6 +119,7 @@ Commands:
   preview --config <path> --connection <name>
   export  --config <path> --connection <name> --scope database --output <path> [--format json|xml|xls]
   export  --config <path> --connection <name> --scope table --table <name> [--schema <schema>] --output <path>
+  export  --config <path> --connection <name> --scope items --item-profile <path> --output <directory>
   export  --config <path> --connection <name> --scope query --sql <select-sql> --output <path>
 
 Common options:
@@ -123,6 +128,18 @@ Common options:
   --overwrite                Replace an existing output file.
   --no-schema                Omit column metadata when the format supports it.
 """);
+    }
+
+    private static async Task<ItemExportProfile?> LoadItemProfileAsync(string? path, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        await using var stream = File.OpenRead(path);
+        return await JsonSerializer.DeserializeAsync<ItemExportProfile>(stream, DatabaseExportConfiguration.CreateJsonOptions(), cancellationToken)
+            ?? throw new InvalidOperationException($"Item profile '{path}' is empty.");
     }
 }
 

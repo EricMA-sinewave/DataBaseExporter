@@ -20,6 +20,11 @@ public sealed class IdentifierQuoter
             : $"{QuotePart(table.Schema)}.{QuotePart(table.Name)}";
     }
 
+    public string QuoteIdentifier(string identifier)
+    {
+        return QuotePart(identifier);
+    }
+
     private string QuotePart(string part)
     {
         if (string.IsNullOrWhiteSpace(part))

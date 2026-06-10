@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Media;
 using DataBaseExporter.Core.Configuration;
@@ -20,9 +21,20 @@ public sealed class MainWindow : Window
     private readonly ComboBox _format = new() { MinWidth = 100 };
     private readonly ComboBox _schema = new() { MinWidth = 140 };
     private readonly ComboBox _table = new() { MinWidth = 180 };
+    private readonly StackPanel _modePanelHost = new() { Spacing = 8 };
     private readonly TextBox _sql = new() { PlaceholderText = "SELECT ...", AcceptsReturn = true, MinHeight = 76 };
+    private readonly ComboBox _itemRootSchema = new() { MinWidth = 140 };
+    private readonly ComboBox _itemRootTable = new() { MinWidth = 220 };
+    private readonly ComboBox _itemRootKey = new() { MinWidth = 180 };
+    private readonly StackPanel _itemTableKeyRowsPanel = new() { Spacing = 6 };
+    private readonly StackPanel _itemRelationshipRowsPanel = new() { Spacing = 6 };
+    private readonly Button _addItemTableKey = new() { Content = "+" };
+    private readonly Button _addItemRelationship = new() { Content = "+" };
+    private readonly Button _validateItems = new() { Content = "Validate Items Profile" };
+    private readonly TextBlock _itemValidation = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly NumericUpDown _itemMaxDepth = new() { Minimum = 1, Maximum = 100, Increment = 1, Value = 20 };
     private readonly TextBox _output = new() { PlaceholderText = "exports\\data.json" };
-    private readonly NumericUpDown _maxRows = new() { Minimum = 1, Maximum = decimal.MaxValue, Increment = 100, PlaceholderText = "max rows" };
+    private readonly NumericUpDown _maxRows = new() { Minimum = 0, Maximum = decimal.MaxValue, Increment = 100, PlaceholderText = "0 = unlimited" };
     private readonly CheckBox _overwrite = new() { Content = "Overwrite" };
     private readonly Button _preview = new() { Content = "Preview" };
     private readonly Button _export = new() { Content = "Export" };
@@ -62,6 +74,9 @@ public sealed class MainWindow : Window
     private IReadOnlyList<DatabaseTablePreview> _lastPreview = Array.Empty<DatabaseTablePreview>();
     private IReadOnlyList<DatabaseTablePreview> _visiblePreview = Array.Empty<DatabaseTablePreview>();
     private readonly Dictionary<string, DatabaseTablePreview> _visiblePreviewByDisplayText = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DatabaseTablePreview> _previewByTableLabel = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<ItemTableKeyRow> _itemTableKeyRows = new();
+    private readonly List<ItemRelationshipRow> _itemRelationshipRows = new();
     private readonly Dictionary<string, IReadOnlyList<DatabaseTablePreview>> _previewCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _connectionsAllowedToPersistSecrets = new(StringComparer.OrdinalIgnoreCase);
 
@@ -73,7 +88,7 @@ public sealed class MainWindow : Window
         MinWidth = 980;
         MinHeight = 620;
 
-        _scope.ItemsSource = new[] { "database", "table", "tables", "query" };
+        _scope.ItemsSource = new[] { "database", "table", "tables", "items", "query" };
         _scope.SelectedItem = "table";
         _format.ItemsSource = new[] { "json", "xml", "xls" };
         _format.SelectedIndex = 0;
@@ -94,6 +109,11 @@ public sealed class MainWindow : Window
         _schema.SelectionChanged += (_, _) => RefreshTablesForSelectedSchema();
         _table.SelectionChanged += (_, _) => ShowSelectedDropdownTable();
         _tables.SelectionChanged += (_, _) => ShowSelectedTable();
+        _itemRootSchema.SelectionChanged += (_, _) => RefreshItemRootTables();
+        _itemRootTable.SelectionChanged += (_, _) => RefreshItemRootKeyColumns();
+        _addItemTableKey.Click += (_, _) => AddItemTableKeyRow();
+        _addItemRelationship.Click += (_, _) => AddItemRelationshipRow();
+        _validateItems.Click += (_, _) => ValidateItemProfileUi(showSuccess: true, throwOnError: false);
         _engine.SelectionChanged += (_, _) => ApplyEngineDefaults();
         _useSsh.Click += (_, _) => ApplySshUiState();
         _sshAuthMode.SelectionChanged += (_, _) => ApplySshUiState();
@@ -142,6 +162,7 @@ public sealed class MainWindow : Window
             RowDefinitions =
             {
                 new RowDefinition(GridLength.Auto),
+                new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Star),
                 new RowDefinition(GridLength.Auto)
             }
@@ -152,18 +173,25 @@ public sealed class MainWindow : Window
         controls.Children.Add(Field("Cached Connection", _quickConnections, 220));
         controls.Children.Add(Field("Scope", _scope, 120));
         controls.Children.Add(Field("Format", _format, 100));
-        controls.Children.Add(Field("Schema", _schema, 140));
-        controls.Children.Add(Field("Table", _table, 180));
         controls.Children.Add(Field("Max Rows", _maxRows, 130));
         controls.Children.Add(_overwrite);
         controls.Children.Add(_preview);
         controls.Children.Add(_export);
         top.Children.Add(controls);
         top.Children.Add(Field("Output", _output));
-        top.Children.Add(Field("SQL", _sql));
 
         Grid.SetRow(top, 0);
         root.Children.Add(top);
+
+        var modeScroll = new ScrollViewer
+        {
+            Content = _modePanelHost,
+            Margin = new Thickness(12, 0, 12, 12),
+            MaxHeight = 280,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+        };
+        Grid.SetRow(modeScroll, 1);
+        root.Children.Add(modeScroll);
 
         var body = new Grid
         {
@@ -179,14 +207,96 @@ public sealed class MainWindow : Window
         var detailScroll = new ScrollViewer { Content = _details, Padding = new Thickness(12) };
         Grid.SetColumn(detailScroll, 1);
         body.Children.Add(detailScroll);
-        Grid.SetRow(body, 1);
+        Grid.SetRow(body, 2);
         root.Children.Add(body);
 
         _status.Margin = new Thickness(12);
-        Grid.SetRow(_status, 2);
+        Grid.SetRow(_status, 3);
         root.Children.Add(_status);
 
         return root;
+    }
+
+    private Control BuildDatabaseScopePanel()
+    {
+        return new StackPanel
+        {
+            Spacing = 6,
+            Children =
+            {
+                new TextBlock { Text = "Database Export", FontWeight = FontWeight.SemiBold },
+                new TextBlock { Text = "Exports all tables from the selected connection. Use Preview before production exports to check table count and record estimates.", TextWrapping = TextWrapping.Wrap }
+            }
+        };
+    }
+
+    private Control BuildTableScopePanel()
+    {
+        return new StackPanel
+        {
+            Spacing = 8,
+            Children =
+            {
+                new TextBlock { Text = "Single Table Export", FontWeight = FontWeight.SemiBold },
+                Row(Field("Schema", _schema, 140), Field("Table", _table, 220))
+            }
+        };
+    }
+
+    private Control BuildTablesScopePanel()
+    {
+        return new StackPanel
+        {
+            Spacing = 8,
+            Children =
+            {
+                new TextBlock { Text = "Multiple Tables Export", FontWeight = FontWeight.SemiBold },
+                Row(Field("Schema Filter", _schema, 140)),
+                new TextBlock { Text = "Select one or more tables from the preview list below.", TextWrapping = TextWrapping.Wrap }
+            }
+        };
+    }
+
+    private Control BuildItemsScopePanel()
+    {
+        return new StackPanel
+        {
+            Spacing = 10,
+            Children =
+            {
+                new TextBlock { Text = "Items Export", FontWeight = FontWeight.SemiBold },
+                Row(Field("Root Schema", _itemRootSchema, 140), Field("Root Table", _itemRootTable, 220), Field("Root Key", _itemRootKey, 180), Field("Max Depth", _itemMaxDepth, 130), _validateItems),
+                BuildDynamicRowsPanel("Table Keys", _addItemTableKey, _itemTableKeyRowsPanel),
+                BuildDynamicRowsPanel("Relationships", _addItemRelationship, _itemRelationshipRowsPanel),
+                _itemValidation
+            }
+        };
+    }
+
+    private Control BuildQueryScopePanel()
+    {
+        return new StackPanel
+        {
+            Spacing = 8,
+            Children =
+            {
+                new TextBlock { Text = "SQL Query Export", FontWeight = FontWeight.SemiBold },
+                Field("SQL", _sql)
+            }
+        };
+    }
+
+    private static Control BuildDynamicRowsPanel(string title, Button addButton, StackPanel rows)
+    {
+        return new StackPanel
+        {
+            Spacing = 6,
+            Children =
+            {
+                Row(new TextBlock { Text = title, FontWeight = FontWeight.SemiBold, VerticalAlignment = VerticalAlignment.Center }, addButton),
+                rows
+            }
+        };
     }
 
     private Control BuildConnectionPage()
@@ -433,13 +543,16 @@ public sealed class MainWindow : Window
     {
         try
         {
+            var itemProfile = BuildItemProfile();
             var request = new ExportRequest
             {
                 ConnectionName = RequireSelection(_quickConnections, "Connection"),
                 Scope = ParseScope(RequireSelection(_scope, "Scope")),
-                Schema = GetSelectedSchema(),
-                Table = GetSelectedTable(),
+                Schema = itemProfile?.RootSchema ?? GetSelectedSchema(),
+                Table = itemProfile?.RootTable ?? GetSelectedTable(),
                 Tables = GetSelectedTables(),
+                ItemKeyColumn = itemProfile?.RootKeyColumn,
+                ItemProfile = itemProfile,
                 Sql = EmptyToNull(_sql.Text),
                 Format = RequireSelection(_format, "Format"),
                 OutputPath = RequireText(_output, "Output"),
@@ -652,11 +765,41 @@ public sealed class MainWindow : Window
         var isDatabase = string.Equals(scope, "database", StringComparison.OrdinalIgnoreCase);
         var isTable = string.Equals(scope, "table", StringComparison.OrdinalIgnoreCase);
         var isTables = string.Equals(scope, "tables", StringComparison.OrdinalIgnoreCase);
+        var isItems = string.Equals(scope, "items", StringComparison.OrdinalIgnoreCase);
         var isQuery = string.Equals(scope, "query", StringComparison.OrdinalIgnoreCase);
+
+        _modePanelHost.Children.Clear();
+        if (isDatabase)
+        {
+            _modePanelHost.Children.Add(BuildDatabaseScopePanel());
+        }
+        else if (isTables)
+        {
+            _modePanelHost.Children.Add(BuildTablesScopePanel());
+        }
+        else if (isItems)
+        {
+            _modePanelHost.Children.Add(BuildItemsScopePanel());
+        }
+        else if (isQuery)
+        {
+            _modePanelHost.Children.Add(BuildQueryScopePanel());
+        }
+        else
+        {
+            _modePanelHost.Children.Add(BuildTableScopePanel());
+        }
 
         _schema.IsEnabled = isTable || isTables;
         _table.IsEnabled = isTable;
-        _tables.IsEnabled = isTable || isTables;
+        _itemRootSchema.IsEnabled = isItems;
+        _itemRootTable.IsEnabled = isItems;
+        _itemRootKey.IsEnabled = isItems;
+        _itemMaxDepth.IsEnabled = isItems;
+        _addItemTableKey.IsEnabled = isItems;
+        _addItemRelationship.IsEnabled = isItems;
+        _validateItems.IsEnabled = isItems;
+        _tables.IsEnabled = isTable || isTables || isItems;
         _sql.IsEnabled = isQuery;
 
         _tables.SelectionMode = isTables ? SelectionMode.Multiple : SelectionMode.Single;
@@ -749,6 +892,12 @@ public sealed class MainWindow : Window
     private void ApplyPreview(IReadOnlyList<DatabaseTablePreview> previews)
     {
         _lastPreview = previews;
+        _previewByTableLabel.Clear();
+        foreach (var preview in previews)
+        {
+            _previewByTableLabel[preview.Table.ToString()] = preview;
+        }
+
         var schemaItems = previews
             .Select(x => ToSchemaLabel(x.Table.Schema))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -757,6 +906,8 @@ public sealed class MainWindow : Window
 
         _schema.ItemsSource = schemaItems;
         _schema.SelectedIndex = schemaItems.Length > 0 ? 0 : -1;
+        RefreshItemSchemaChoices();
+        RefreshItemRowChoices();
         RefreshTablesForSelectedSchema();
     }
 
@@ -876,6 +1027,320 @@ public sealed class MainWindow : Window
         return _table.SelectedItem as string;
     }
 
+    private ItemExportProfile? BuildItemProfile()
+    {
+        if (!string.Equals(_scope.SelectedItem as string, "items", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        ValidateItemProfileUi(showSuccess: false, throwOnError: true);
+        var rootPreview = RequireItemTableSelection(_itemRootTable, "Items root table");
+        var rootKey = RequireSelection(_itemRootKey, "Items root key");
+        var tableKeys = BuildItemTableKeys(rootPreview.Table, rootKey);
+
+        return new ItemExportProfile
+        {
+            RootSchema = rootPreview.Table.Schema,
+            RootTable = rootPreview.Table.Name,
+            RootKeyColumn = rootKey,
+            TableKeys = tableKeys,
+            Relationships = BuildItemRelationships(),
+            MaxDepth = _itemMaxDepth.Value is null ? 20 : decimal.ToInt32(_itemMaxDepth.Value.Value)
+        };
+    }
+
+    private Dictionary<string, string> BuildItemTableKeys(DatabaseTable rootTable, string rootKey)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        AddItemTableKey(result, rootTable, rootKey);
+        foreach (var row in _itemTableKeyRows)
+        {
+            if (row.Table.SelectedItem is not string tableLabel || row.Column.SelectedItem is not string column)
+            {
+                continue;
+            }
+
+            AddItemTableKey(result, RequireItemTableSelection(row.Table, "Items table key table").Table, column);
+        }
+
+        return result;
+    }
+
+    private static void AddItemTableKey(Dictionary<string, string> tableKeys, DatabaseTable table, string column)
+    {
+        tableKeys[table.ToString()] = column;
+        if (string.IsNullOrWhiteSpace(table.Schema))
+        {
+            return;
+        }
+
+        tableKeys.TryAdd(table.Name, column);
+    }
+
+    private IReadOnlyList<ItemRelationship> BuildItemRelationships()
+    {
+        var result = new List<ItemRelationship>();
+        foreach (var row in _itemRelationshipRows)
+        {
+            if (row.FromTable.SelectedItem is not string
+                || row.FromColumn.SelectedItem is not string fromColumn
+                || row.ToTable.SelectedItem is not string
+                || row.ToColumn.SelectedItem is not string toColumn)
+            {
+                continue;
+            }
+
+            var from = RequireItemTableSelection(row.FromTable, "Relationship source table").Table;
+            var to = RequireItemTableSelection(row.ToTable, "Relationship target table").Table;
+            result.Add(new ItemRelationship(from.Schema, from.Name, fromColumn, to.Schema, to.Name, toColumn));
+        }
+
+        return result;
+    }
+
+    private void ValidateItemProfileUi(bool showSuccess, bool throwOnError)
+    {
+        try
+        {
+            var root = RequireItemTableSelection(_itemRootTable, "Items root table").Table;
+            var rootKey = RequireSelection(_itemRootKey, "Items root key");
+            if (!_previewByTableLabel.TryGetValue(root.ToString(), out var rootPreview)
+                || !rootPreview.Columns.Any(x => string.Equals(x.Name, rootKey, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException("Items root key is not a column on the selected root table.");
+            }
+
+            ValidateItemTableKeyRows(root);
+            ValidateItemRelationshipRows();
+            _itemValidation.Text = showSuccess ? "Items profile is valid." : "";
+            _itemValidation.Foreground = Brushes.DarkSlateGray;
+        }
+        catch (Exception ex)
+        {
+            _itemValidation.Text = ex.Message;
+            _itemValidation.Foreground = Brushes.Firebrick;
+            if (throwOnError)
+            {
+                throw;
+            }
+        }
+    }
+
+    private void ValidateItemTableKeyRows(DatabaseTable root)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { root.ToString() };
+        foreach (var row in _itemTableKeyRows)
+        {
+            var table = RequireItemTableSelection(row.Table, "Table key table").Table;
+            var column = RequireSelection(row.Column, "Table key column");
+            if (!seen.Add(table.ToString()))
+            {
+                throw new InvalidOperationException($"Duplicate table key mapping for '{table}'.");
+            }
+
+            if (!_previewByTableLabel.TryGetValue(table.ToString(), out var preview)
+                || !preview.Columns.Any(x => string.Equals(x.Name, column, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException($"Column '{column}' is not available on table '{table}'.");
+            }
+        }
+    }
+
+    private void ValidateItemRelationshipRows()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in _itemRelationshipRows)
+        {
+            var fromTable = RequireItemTableSelection(row.FromTable, "Relationship source table").Table;
+            var fromColumn = RequireSelection(row.FromColumn, "Relationship source key");
+            var toTable = RequireItemTableSelection(row.ToTable, "Relationship target table").Table;
+            var toColumn = RequireSelection(row.ToColumn, "Relationship target key");
+            if (fromTable.Equals(toTable) && string.Equals(fromColumn, toColumn, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Relationship cannot point a column to itself.");
+            }
+
+            var signature = $"{fromTable}.{fromColumn}->{toTable}.{toColumn}";
+            if (!seen.Add(signature))
+            {
+                throw new InvalidOperationException($"Duplicate relationship '{signature}'.");
+            }
+
+            EnsureColumnExists(fromTable, fromColumn);
+            EnsureColumnExists(toTable, toColumn);
+        }
+    }
+
+    private void EnsureColumnExists(DatabaseTable table, string column)
+    {
+        if (!_previewByTableLabel.TryGetValue(table.ToString(), out var preview)
+            || !preview.Columns.Any(x => string.Equals(x.Name, column, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException($"Column '{column}' is not available on table '{table}'.");
+        }
+    }
+
+    private void AddItemTableKeyRow(string? selectedTable = null, string? selectedColumn = null)
+    {
+        var table = new ComboBox { MinWidth = 220 };
+        var column = new ComboBox { MinWidth = 180 };
+        var remove = new Button { Content = "-", Width = 32 };
+        var container = Row(Field("Table", table, 220), Field("Key", column, 180), remove);
+        var row = new ItemTableKeyRow(container, table, column, remove);
+
+        table.SelectionChanged += (_, _) => RefreshColumnChoices(table, column);
+        remove.Click += (_, _) =>
+        {
+            _itemTableKeyRows.Remove(row);
+            _itemTableKeyRowsPanel.Children.Remove(container);
+        };
+
+        _itemTableKeyRows.Add(row);
+        _itemTableKeyRowsPanel.Children.Add(container);
+        RefreshTableKeyChoices(table, selectedTable);
+        RefreshColumnChoices(table, column, selectedColumn);
+    }
+
+    private void AddItemRelationshipRow()
+    {
+        var fromTable = new ComboBox { MinWidth = 190 };
+        var fromColumn = new ComboBox { MinWidth = 150 };
+        var toTable = new ComboBox { MinWidth = 190 };
+        var toColumn = new ComboBox { MinWidth = 150 };
+        var remove = new Button { Content = "-", Width = 32 };
+        var container = Row(
+            Field("From Table", fromTable, 190),
+            Field("From Key", fromColumn, 150),
+            new TextBlock { Text = "->", FontSize = 18, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 16, 12, 0) },
+            Field("To Table", toTable, 190),
+            Field("To Key", toColumn, 150),
+            remove);
+        var row = new ItemRelationshipRow(container, fromTable, fromColumn, toTable, toColumn, remove);
+
+        fromTable.SelectionChanged += (_, _) => RefreshColumnChoices(fromTable, fromColumn);
+        toTable.SelectionChanged += (_, _) => RefreshColumnChoices(toTable, toColumn);
+        remove.Click += (_, _) =>
+        {
+            _itemRelationshipRows.Remove(row);
+            _itemRelationshipRowsPanel.Children.Remove(container);
+        };
+
+        _itemRelationshipRows.Add(row);
+        _itemRelationshipRowsPanel.Children.Add(container);
+        RefreshTableChoices(fromTable);
+        RefreshColumnChoices(fromTable, fromColumn);
+        RefreshTableChoices(toTable);
+        RefreshColumnChoices(toTable, toColumn);
+    }
+
+    private void RefreshItemSchemaChoices()
+    {
+        var current = _itemRootSchema.SelectedItem as string;
+        var schemas = _lastPreview
+            .Select(x => ToSchemaLabel(x.Table.Schema))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x)
+            .ToArray();
+        SetComboItems(_itemRootSchema, schemas, current);
+        RefreshItemRootTables();
+    }
+
+    private void RefreshItemRootTables()
+    {
+        var current = _itemRootTable.SelectedItem as string;
+        var selectedSchema = FromSchemaLabel(_itemRootSchema.SelectedItem as string);
+        var tables = _lastPreview
+            .Where(x => string.Equals(NormalizeSchema(x.Table.Schema), NormalizeSchema(selectedSchema), StringComparison.OrdinalIgnoreCase))
+            .Select(x => x.Table.ToString())
+            .OrderBy(x => x)
+            .ToArray();
+        SetComboItems(_itemRootTable, tables, current);
+        RefreshItemRootKeyColumns();
+    }
+
+    private void RefreshItemRootKeyColumns()
+    {
+        var current = _itemRootKey.SelectedItem as string;
+        var columns = _itemRootTable.SelectedItem is string tableLabel && _previewByTableLabel.TryGetValue(tableLabel, out var preview)
+            ? preview.Columns.Select(x => x.Name).ToArray()
+            : Array.Empty<string>();
+        SetComboItems(_itemRootKey, columns, current);
+        RefreshItemTableKeyChoices();
+    }
+
+    private void RefreshItemRowChoices()
+    {
+        RefreshItemTableKeyChoices();
+
+        foreach (var row in _itemRelationshipRows)
+        {
+            var fromTable = row.FromTable.SelectedItem as string;
+            var fromColumn = row.FromColumn.SelectedItem as string;
+            var toTable = row.ToTable.SelectedItem as string;
+            var toColumn = row.ToColumn.SelectedItem as string;
+            RefreshTableChoices(row.FromTable, fromTable);
+            RefreshColumnChoices(row.FromTable, row.FromColumn, fromColumn);
+            RefreshTableChoices(row.ToTable, toTable);
+            RefreshColumnChoices(row.ToTable, row.ToColumn, toColumn);
+        }
+    }
+
+    private void RefreshItemTableKeyChoices()
+    {
+        foreach (var row in _itemTableKeyRows)
+        {
+            var table = row.Table.SelectedItem as string;
+            var column = row.Column.SelectedItem as string;
+            RefreshTableKeyChoices(row.Table, table);
+            RefreshColumnChoices(row.Table, row.Column, column);
+        }
+    }
+
+    private void RefreshTableChoices(ComboBox tableCombo, string? preferred = null)
+    {
+        var current = preferred ?? tableCombo.SelectedItem as string;
+        var tableLabels = _previewByTableLabel.Keys.OrderBy(x => x).ToArray();
+        SetComboItems(tableCombo, tableLabels, current);
+    }
+
+    private void RefreshTableKeyChoices(ComboBox tableCombo, string? preferred = null)
+    {
+        var current = preferred ?? tableCombo.SelectedItem as string;
+        var rootTable = _itemRootTable.SelectedItem as string;
+        var tableLabels = _previewByTableLabel.Keys
+            .Where(x => !string.Equals(x, rootTable, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(x => x)
+            .ToArray();
+        SetComboItems(tableCombo, tableLabels, current);
+    }
+
+    private void RefreshColumnChoices(ComboBox tableCombo, ComboBox columnCombo, string? preferred = null)
+    {
+        var current = preferred ?? columnCombo.SelectedItem as string;
+        var columns = tableCombo.SelectedItem is string tableLabel && _previewByTableLabel.TryGetValue(tableLabel, out var preview)
+            ? preview.Columns.Select(x => x.Name).ToArray()
+            : Array.Empty<string>();
+        SetComboItems(columnCombo, columns, current);
+    }
+
+    private DatabaseTablePreview RequireItemTableSelection(ComboBox comboBox, string name)
+    {
+        var tableLabel = RequireSelection(comboBox, name);
+        return _previewByTableLabel.TryGetValue(tableLabel, out var preview)
+            ? preview
+            : throw new InvalidOperationException($"{name} '{tableLabel}' is not available. Run Preview first.");
+    }
+
+    private static void SetComboItems(ComboBox comboBox, string[] items, string? preferred)
+    {
+        comboBox.ItemsSource = items;
+        var selectedIndex = string.IsNullOrWhiteSpace(preferred)
+            ? -1
+            : Array.FindIndex(items, x => string.Equals(x, preferred, StringComparison.OrdinalIgnoreCase));
+        comboBox.SelectedIndex = selectedIndex >= 0 ? selectedIndex : items.Length > 0 ? 0 : -1;
+    }
+
     private IReadOnlyList<ExportTableSelection> GetSelectedTables()
     {
         if (_tables.SelectedItems is null || _tables.SelectedItems.Count == 0)
@@ -964,6 +1429,7 @@ public sealed class MainWindow : Window
             "database" => ExportScope.Database,
             "table" => ExportScope.Table,
             "tables" => ExportScope.Tables,
+            "items" => ExportScope.Items,
             "query" => ExportScope.Query,
             _ => throw new InvalidOperationException($"Unsupported scope '{value}'.")
         };
@@ -976,6 +1442,7 @@ public sealed class MainWindow : Window
             ExportScope.Database => "database",
             ExportScope.Table => string.IsNullOrWhiteSpace(request.Schema) ? request.Table ?? "table" : $"{request.Schema}.{request.Table}",
             ExportScope.Tables => $"{request.Tables.Count} selected tables",
+            ExportScope.Items => $"items from {request.Table}.{request.ItemKeyColumn}",
             ExportScope.Query => "query result",
             _ => "selection"
         };
@@ -1065,4 +1532,14 @@ public sealed class MainWindow : Window
 
         return string.Join(" ", messages);
     }
+
+    private sealed record ItemTableKeyRow(Control Container, ComboBox Table, ComboBox Column, Button Remove);
+
+    private sealed record ItemRelationshipRow(
+        Control Container,
+        ComboBox FromTable,
+        ComboBox FromColumn,
+        ComboBox ToTable,
+        ComboBox ToColumn,
+        Button Remove);
 }

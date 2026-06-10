@@ -12,6 +12,10 @@ public sealed class ExportRequest
 
     public IReadOnlyList<ExportTableSelection> Tables { get; init; } = Array.Empty<ExportTableSelection>();
 
+    public string? ItemKeyColumn { get; init; }
+
+    public ItemExportProfile? ItemProfile { get; init; }
+
     public string? Sql { get; init; }
 
     public string OutputPath { get; init; } = "";
@@ -32,7 +36,31 @@ public enum ExportScope
     Database,
     Table,
     Tables,
+    Items,
     Query
 }
 
 public sealed record ExportTableSelection(string? Schema, string Table);
+
+public sealed class ItemExportProfile
+{
+    public string? RootSchema { get; init; }
+
+    public string RootTable { get; init; } = "";
+
+    public string RootKeyColumn { get; init; } = "";
+
+    public Dictionary<string, string> TableKeys { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public IReadOnlyList<ItemRelationship> Relationships { get; init; } = Array.Empty<ItemRelationship>();
+
+    public int MaxDepth { get; init; } = 20;
+}
+
+public sealed record ItemRelationship(
+    string? FromSchema,
+    string FromTable,
+    string FromColumn,
+    string? ToSchema,
+    string ToTable,
+    string ToColumn);

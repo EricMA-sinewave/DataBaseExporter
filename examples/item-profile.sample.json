@@ -1,0 +1,38 @@
+{
+  "rootTable": "avatar",
+  "rootKeyColumn": "id",
+  "tableKeys": {
+    "avatar": "id",
+    "inventory": "id",
+    "item_detail": "id",
+    "customisation": "id",
+    "color_palette": "id"
+  },
+  "relationships": [
+    {
+      "fromTable": "avatar",
+      "fromColumn": "id",
+      "toTable": "inventory",
+      "toColumn": "avatar_id"
+    },
+    {
+      "fromTable": "inventory",
+      "fromColumn": "item_id",
+      "toTable": "item_detail",
+      "toColumn": "id"
+    },
+    {
+      "fromTable": "avatar",
+      "fromColumn": "id",
+      "toTable": "customisation",
+      "toColumn": "owner_avatar"
+    },
+    {
+      "fromTable": "customisation",
+      "fromColumn": "palette_id",
+      "toTable": "color_palette",
+      "toColumn": "id"
+    }
+  ],
+  "maxDepth": 20
+}

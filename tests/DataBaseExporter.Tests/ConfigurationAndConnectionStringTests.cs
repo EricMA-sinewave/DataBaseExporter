@@ -1,5 +1,7 @@
 using DataBaseExporter.Core.Configuration;
 using DataBaseExporter.Core.Database;
+using DataBaseExporter.Core.Exporting;
+using System.Text.Json;
 
 namespace DataBaseExporter.Tests;
 
@@ -136,5 +138,36 @@ public sealed class ConfigurationAndConnectionStringTests
         {
             File.Delete(path);
         }
+    }
+
+    [TestMethod]
+    public void ItemExportProfile_DeserializesRelationships()
+    {
+        var profile = JsonSerializer.Deserialize<ItemExportProfile>("""
+{
+  "rootTable": "avatar",
+  "rootKeyColumn": "id",
+  "tableKeys": {
+    "avatar": "id",
+    "inventory": "id"
+  },
+  "relationships": [
+    {
+      "fromTable": "avatar",
+      "fromColumn": "id",
+      "toTable": "inventory",
+      "toColumn": "avatar_id"
+    }
+  ],
+  "maxDepth": 8
+}
+""", DatabaseExportConfiguration.CreateJsonOptions());
+
+        Assert.IsNotNull(profile);
+        Assert.AreEqual("avatar", profile.RootTable);
+        Assert.AreEqual("id", profile.TableKeys["avatar"]);
+        Assert.AreEqual(1, profile.Relationships.Count);
+        Assert.AreEqual("inventory", profile.Relationships[0].ToTable);
+        Assert.AreEqual(8, profile.MaxDepth);
     }
 }

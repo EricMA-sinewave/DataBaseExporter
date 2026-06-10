@@ -8,7 +8,7 @@ Chinese documentation is available in [README.zh-CN.md](README.zh-CN.md).
 
 - Manage multiple local or remote database connections through JSON configuration.
 - Uses ADO.NET `DbProviderFactory`, with support for SQL Server, PostgreSQL, MySQL, SQLite, and other providers.
-- Export scopes: entire database, single table, multiple selected tables, or a custom read-only SQL query.
+- Export scopes: entire database, single table, multiple selected tables, item-by-key export, or a custom read-only SQL query.
 - Export formats: JSON, XML, and XLS. XLS uses SpreadsheetML 2003, which Excel can open.
 - Preview database structure before export: schema, table names, columns, and approximate row counts.
 - Read-only SQL safety checks by default, including refusal of multiple statements and common destructive keywords.
@@ -20,6 +20,7 @@ Chinese documentation is available in [README.zh-CN.md](README.zh-CN.md).
 dotnet run --project src\DataBaseExporter.Cli -- preview --config examples\config.sample.json --connection sqlserver
 dotnet run --project src\DataBaseExporter.Cli -- export --config examples\config.sample.json --connection sqlserver --scope database --output exports\db.json --overwrite
 dotnet run --project src\DataBaseExporter.Cli -- export --config examples\config.sample.json --connection sqlserver --scope table --schema dbo --table Users --output exports\users.xml --format xml --overwrite
+dotnet run --project src\DataBaseExporter.Cli -- export --config examples\config.sample.json --connection mysql --scope items --item-profile examples\item-profile.sample.json --output exports\avatars --format json --max-rows 10 --overwrite
 dotnet run --project src\DataBaseExporter.Cli -- export --config examples\config.sample.json --connection sqlserver --scope query --sql "SELECT TOP 100 * FROM dbo.Users" --output exports\query.xls --format xls --overwrite
 ```
 
@@ -35,7 +36,24 @@ After the first successful `Preview`, the GUI caches database structure and fill
 
 The GUI defaults to exporting the currently selected single table. To export multiple tables, select multiple entries in the table list; the scope switches to `tables`. To export the entire database, explicitly set the scope to `database`.
 
-`Scope` is the active mode switch in the GUI. In `query` mode, only the SQL editor is used for export and table selection is disabled. In `table` or `tables` mode, SQL is disabled and the selected table controls are used. In `database` mode, table and SQL inputs are disabled and the entire database is exported.
+`Scope` is the active mode switch in the GUI. In `query` mode, only the SQL editor is used for export and table selection is disabled. In `table` or `tables` mode, SQL is disabled and the selected table controls are used. In `items` mode, select a base table and an item key column; the output path is treated as a directory and one file is written per key value. In `database` mode, table and SQL inputs are disabled and the entire database is exported.
+
+Items export uses a relationship graph. It reads key values from the root table, recursively follows configured downstream relationships, and writes one self-contained file per root key. `Max Rows` / `--max-rows` limits the number of root key values for testing; `0` or an empty value means unlimited. Schema metadata is omitted for this export type. String values that look like Base64 payloads are decoded before writing.
+
+GUI relationship text uses one relationship per line:
+
+```text
+avatar.id -> inventory.avatar_id
+inventory.item_id -> item_detail.id
+```
+
+GUI table key text uses one primary key per line:
+
+```text
+avatar=id
+inventory=id
+item_detail=id
+```
 
 ## Provider Configuration
 
