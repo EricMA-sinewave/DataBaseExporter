@@ -199,7 +199,8 @@ public sealed class ConfigurationAndConnectionStringTests
   ],
   "maxDepth": 8,
   "batchSize": 50,
-  "queryDelayMilliseconds": 25
+  "queryDelayMilliseconds": 25,
+  "requireAllTables": true
 }
 """, DatabaseExportConfiguration.CreateJsonOptions());
 
@@ -211,5 +212,6 @@ public sealed class ConfigurationAndConnectionStringTests
         Assert.AreEqual(8, profile.MaxDepth);
         Assert.AreEqual(50, profile.BatchSize);
         Assert.AreEqual(25, profile.QueryDelayMilliseconds);
+        Assert.IsTrue(profile.RequireAllTables);
     }
 }

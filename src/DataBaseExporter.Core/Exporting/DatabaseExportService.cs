@@ -9,6 +9,7 @@ namespace DataBaseExporter.Core.Exporting;
 
 public sealed class DatabaseExportService
 {
+    private const string ExplicitBase64Prefix = "BASE64__";
     private const int MaxItemBatchSize = 1000;
 
     private readonly IDatabaseConnectionFactory _connectionFactory;
@@ -217,6 +218,9 @@ public sealed class DatabaseExportService
         var baseTable = new DatabaseTable(profile.RootSchema, profile.RootTable);
         var itemKeys = await ReadItemKeysAsync(connection, options, quoter, baseTable, profile.RootKeyColumn, maxItems, cancellationToken);
         var rootBatchSize = NormalizeItemBatchSize(profile.BatchSize, configuredBatchSize);
+        var requiredItemTableKeys = request.RequireAllItemTables || profile.RequireAllTables
+            ? BuildRequiredItemTableKeys(profile)
+            : null;
         var summaries = new List<ResultSetSummary>(itemKeys.Count);
 
         foreach (var keyBatch in itemKeys.Chunk(rootBatchSize))
@@ -237,6 +241,11 @@ public sealed class DatabaseExportService
                     graph = new ItemExportGraph(key);
                 }
 
+                if (requiredItemTableKeys is not null && !HasRequiredItemTables(graph.Tables, requiredItemTableKeys))
+                {
+                    continue;
+                }
+
                 summaries.Add(await WriteItemGraphAsync(
                     writer,
                     outputDirectory,
@@ -248,6 +257,37 @@ public sealed class DatabaseExportService
         }
 
         return new ExportSummary(outputDirectory, writer.Format, summaries.Sum(x => x.RowCount), summaries);
+    }
+
+    private static HashSet<string> BuildRequiredItemTableKeys(ItemExportProfile profile)
+    {
+        var required = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            BuildTableKey(new DatabaseTable(profile.RootSchema, profile.RootTable))
+        };
+
+        foreach (var relationship in profile.Relationships)
+        {
+            required.Add(BuildTableKey(new DatabaseTable(relationship.FromSchema, relationship.FromTable)));
+            required.Add(BuildTableKey(new DatabaseTable(relationship.ToSchema, relationship.ToTable)));
+        }
+
+        return required;
+    }
+
+    private static bool HasRequiredItemTables(
+        IReadOnlyDictionary<string, List<IReadOnlyDictionary<string, object?>>> tables,
+        IReadOnlyCollection<string> requiredTableKeys)
+    {
+        foreach (var tableKey in requiredTableKeys)
+        {
+            if (!tables.TryGetValue(tableKey, out var rows) || rows.Count == 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static async Task<ResultSetSummary> WriteItemGraphAsync(
@@ -823,14 +863,26 @@ public sealed class DatabaseExportService
 
     private static object? DecodePossibleBase64(object? value)
     {
-        if (value is not string text || text.Length < 8 || text.Length % 4 != 0)
+        if (value is not string text)
+        {
+            return value;
+        }
+
+        var payload = text;
+        var hasExplicitPrefix = text.StartsWith(ExplicitBase64Prefix, StringComparison.OrdinalIgnoreCase);
+        if (hasExplicitPrefix)
+        {
+            payload = text[ExplicitBase64Prefix.Length..];
+        }
+
+        if (payload.Length == 0 || payload.Length % 4 != 0 || (!hasExplicitPrefix && payload.Length < 8))
         {
             return value;
         }
 
         try
         {
-            var bytes = Convert.FromBase64String(text);
+            var bytes = Convert.FromBase64String(payload);
             var decoded = Encoding.UTF8.GetString(bytes);
             return decoded.Contains('\uFFFD', StringComparison.Ordinal) ? bytes : decoded;
         }

@@ -16,6 +16,8 @@ public sealed class ExportRequest
 
     public ItemExportProfile? ItemProfile { get; init; }
 
+    public bool RequireAllItemTables { get; init; }
+
     public string? Sql { get; init; }
 
     public string OutputPath { get; init; } = "";
@@ -59,6 +61,8 @@ public sealed class ItemExportProfile
     public int BatchSize { get; init; } = 100;
 
     public int QueryDelayMilliseconds { get; init; }
+
+    public bool RequireAllTables { get; init; }
 }
 
 public sealed record ItemRelationship(

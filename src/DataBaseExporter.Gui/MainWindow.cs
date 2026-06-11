@@ -38,6 +38,7 @@ public sealed class MainWindow : Window
     private readonly NumericUpDown _itemMaxDepth = new() { Minimum = 1, Maximum = 100, Increment = 1, Value = 20 };
     private readonly NumericUpDown _itemBatchSize = new() { Minimum = 1, Maximum = 1000, Increment = 10, Value = 100 };
     private readonly NumericUpDown _itemQueryDelay = new() { Minimum = 0, Maximum = 60000, Increment = 50, Value = 0 };
+    private readonly CheckBox _itemRequireAllTables = new() { Content = "Require all tables" };
     private readonly TextBox _output = new() { PlaceholderText = "exports\\data.json" };
     private readonly NumericUpDown _maxRows = new() { Minimum = 0, Maximum = decimal.MaxValue, Increment = 100, PlaceholderText = "0 = unlimited" };
     private readonly CheckBox _overwrite = new() { Content = "Overwrite" };
@@ -273,7 +274,7 @@ public sealed class MainWindow : Window
             Children =
             {
                 new TextBlock { Text = "Items Export", FontWeight = FontWeight.SemiBold },
-                Row(Field("Root Schema", _itemRootSchema, 140), Field("Root Table", _itemRootTable, 220), Field("Root Key", _itemRootKey, 180), Field("Max Depth", _itemMaxDepth, 130), Field("Batch Size", _itemBatchSize, 130), Field("Delay Ms", _itemQueryDelay, 120), _validateItems, _loadItemProfile, _saveItemProfile),
+                Row(Field("Root Schema", _itemRootSchema, 140), Field("Root Table", _itemRootTable, 220), Field("Root Key", _itemRootKey, 180), Field("Max Depth", _itemMaxDepth, 130), Field("Batch Size", _itemBatchSize, 130), Field("Delay Ms", _itemQueryDelay, 120), _itemRequireAllTables, _validateItems, _loadItemProfile, _saveItemProfile),
                 BuildDynamicRowsPanel("Table Keys", _addItemTableKey, _itemTableKeyRowsPanel),
                 BuildDynamicRowsPanel("Relationships", _addItemRelationship, _itemRelationshipRowsPanel),
                 _itemValidation
@@ -1142,7 +1143,8 @@ public sealed class MainWindow : Window
             Relationships = BuildItemRelationships(),
             MaxDepth = _itemMaxDepth.Value is null ? 20 : decimal.ToInt32(_itemMaxDepth.Value.Value),
             BatchSize = _itemBatchSize.Value is null ? 100 : decimal.ToInt32(_itemBatchSize.Value.Value),
-            QueryDelayMilliseconds = _itemQueryDelay.Value is null ? 0 : decimal.ToInt32(_itemQueryDelay.Value.Value)
+            QueryDelayMilliseconds = _itemQueryDelay.Value is null ? 0 : decimal.ToInt32(_itemQueryDelay.Value.Value),
+            RequireAllTables = _itemRequireAllTables.IsChecked == true
         };
     }
 
@@ -1319,6 +1321,7 @@ public sealed class MainWindow : Window
         _itemMaxDepth.Value = profile.MaxDepth <= 0 ? 20 : profile.MaxDepth;
         _itemBatchSize.Value = profile.BatchSize <= 0 ? 100 : profile.BatchSize;
         _itemQueryDelay.Value = profile.QueryDelayMilliseconds < 0 ? 0 : profile.QueryDelayMilliseconds;
+        _itemRequireAllTables.IsChecked = profile.RequireAllTables;
 
         ClearItemProfileRows();
         var addedTableKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { root.Table.ToString() };

@@ -81,6 +81,7 @@ internal static class CliApplication
             Table = options.Get("--table"),
             ItemKeyColumn = options.Get("--item-key"),
             ItemProfile = await LoadItemProfileAsync(options.Get("--item-profile"), cancellationToken),
+            RequireAllItemTables = options.Has("--require-all-item-tables"),
             Sql = options.Get("--sql"),
             Format = options.Get("--format"),
             OutputPath = options.GetRequired("--output"),
@@ -127,6 +128,7 @@ Common options:
   --max-rows <n>             Caps exported rows per result set.
   --overwrite                Replace an existing output file.
   --no-schema                Omit column metadata when the format supports it.
+  --require-all-item-tables  Items only: skip root keys missing data in any profile table.
 """);
     }
 

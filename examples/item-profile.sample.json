@@ -36,5 +36,6 @@
   ],
   "maxDepth": 20,
   "batchSize": 100,
-  "queryDelayMilliseconds": 0
+  "queryDelayMilliseconds": 0,
+  "requireAllTables": false
 }
